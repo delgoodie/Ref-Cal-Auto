@@ -15,6 +15,47 @@ def getTables(dirPath: str) -> list[list[list[str]]]:
     return csvTables
 
 
-tables = getTables(folderPath)
+# tables = getTables(folderPath)
 
-print(tables[0].Read(("\n", 4)))
+# print(tables[0].Write(("B", 4), "ok"))
+#
+#       * FILES
+#       !PDF
+#       {NAME}.pdf                                          PDF
+#
+#       100% or 0 Absorbance Basline.Correction.Raw.csv     CSV
+#
+#       CSTR-18-020.txt                                     TXT
+#
+#       Gray cal Cert.doc                                   DOC
+#
+#       Equation1.Sample.Cycle1.Equation1.csv               CSV
+#
+#       !XLS
+#       GrayReflectCalA.xls                                 XLS
+#
+#       Info.txt                                            TXT
+#
+#       3x Sample552.Sample.Cycle{n}.Raw.csv                CSV
+#
+#
+#       * PROCEDURE
+#
+#       - WRITE  GrayReflectCalA.Correctdata.A1 = Serial Name
+#       - WRITE GrayReflectCalA.Correctdata[B][6:2250] = (100% or 0 Absorbance...).(100% or 0 Absorbance Baseline.C).[B][2:2262]
+#       !Need access to deleted files
+#       - WRITE GrayReflectCalA.Correctdata[H][6:2250] = (Internal CSV FILE).?.?
+#       !Need access to deleted files
+#       - WRITE GrayReflectCalA.Correctdata[J][6:2250] = (Internal CSV FILE).?.?
+#
+#       - +WRITE {ProductName}.txt = GrayReflectCalA.Data to disk.[M:N][6:2250]
+#
+#       - (Copy generated files to directory)
+#
+#       - Make Certificate
+
+xls = easyio.File("C:\\Users\\wdelgiudice\\Downloads\\GrayReflectCalA.xls")
+
+print(xls.Write("Data to disk", "B12", "okok"))
+
+del xls
