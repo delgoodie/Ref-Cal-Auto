@@ -54,8 +54,11 @@ def getTables(dirPath: str) -> list[list[list[str]]]:
 #
 #       - Make Certificate
 
-xls = easyio.File("C:\\Users\\wdelgiudice\\Downloads\\GrayReflectCalA.xls")
-
-print(xls.Write("Data to disk", "B12", "okok"))
-
-del xls
+cal = easyio.File("C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436\\GrayReflectCalA.xls")
+sample = easyio.File("C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436\\Equation1.Sample.Cycle1.Equation1.csv")
+raw = []
+i = 2257
+while i > 1:
+    raw.append(sample.Read(("B", i)))
+    i -= 1
+print(raw)
