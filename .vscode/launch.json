@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Reflectance Target Compiler",
+            "name": "Ref Cal Auto",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
