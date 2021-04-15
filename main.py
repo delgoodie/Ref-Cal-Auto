@@ -4,12 +4,44 @@ import PySimpleGUI as sg
 from docx import Document
 from docx.shared import Inches
 
-# import easyio
+# from easyio import File
 import matplotlib.pyplot as plt
-from docx2pdf import convert
 
-from xlrd import open_workbook, open_workbook_xls
-from xlwt import Workbook
+# from docx2pdf import convert as wordToPdf
+def ParseTablePosition(position) -> tuple[int, int]:
+    if type(position) is str:
+        if ":" in position:
+            c, r = position.split(":", 1)
+        else:
+            match = re.match("^([a-zA-Z]+)(\\d+)$", position)
+            if len(match.regs) > 1:
+                c = position[match.regs[1][0] : match.regs[1][1]]
+                r = position[match.regs[2][0] : match.regs[2][1]]
+        if c and r:
+            position = (ord(c.upper()) - 65, int(r) - 1)
+        else:
+            raise ValueError(f"easyio.ParseTablePosition: c:{c}, r:{r} is invalid position")
+    elif type(position) is tuple:
+        c, r = position
+        if type(c) is int or type(c) is float or re.match("^\\d+$", c):
+            c = int(c)
+        elif re.match("^[A-Za-z]+$", c):
+            c = c.upper()
+            col = 0
+            i = 1
+            for char in c:
+                col += (ord(char) - 65) * i
+                i *= 26
+            c = col
+        r = int(r)
+        position = (c, r - 1)
+    else:
+        raise TypeError(f"easyio.ParseTablePosition: position: {type(position)} is not <class 'str'> or <class 'tuple'>")
+
+    if type(position) is tuple and type(position[0]) is int and type(position[1]) is int:
+        return position
+    else:
+        raise ValueError(f"easyio.ParseTablePosition: c:{c}, r:{r} is invalid position")
 
 
 class CSV:
@@ -38,9 +70,7 @@ class CSV:
             if position[1] < len(self._data) and position[0] < len(self._data[position[0]]):
                 return self._data[position[1]][position[0]]
             else:
-                raise IndexError(
-                    "easyio.CSV.Read: position:{0} not in cols: {1}, rows: {2}".format(str(position), len(self._data[0]), len(self._data))
-                )
+                raise IndexError(f"easyio.CSV.Read: position:{position} not in cols: {len(self._data[0])}, rows: {len(self._data)}")
 
     def Write(self, position, data: str = ""):
         self.modified = True
@@ -71,205 +101,32 @@ class CSV:
             file.close()
 
 
-class XLSX:
-    def __init__():
-        0
-
-
-class XLS:
-    def __init__(self, _path: str):
-        self.path = _path
-        file = open_workbook_xls(self.path)
-        self._data = {}
-        for s in file.sheet_names():
-            self._data[s] = []
-            sheet = file.sheet_by_name(s)
-            for r in range(sheet.nrows):
-                self._data[s].append([])
-                for c in range(sheet.ncols):
-                    self._data[s][-1].append(sheet.cell(r, c).value)
-        self.modified = False
-
-    def Read(self, sheet: str, position="*"):
-        """
-        Read from xls table cell[s]
-
-        position -- cell position: '*', (0, 34) | ('A', 34) | ('A', '34') | 'A34' | 'A:34'
-        if position == '*' then a 2D array of all cols & rows will be returned
-
-        return -- data at position
-        """
-        if not sheet in self._data:
-            raise IndexError("easyio.XLS.Read: {0} not in sheets: {1}".format(sheet, str(self._data.keys())))
-        if position == "*":
-            return self._data[sheet]
-        else:
-            position = ParseTablePosition(position)
-            return self._data[sheet][position[1]][position[0]]
-
-    def Write(self, sheet: str, position, data: str = ""):
-        """
-        Write string to single xls table cell
-
-        position -- cell position: (0, 34) | ('A', 34) | ('A', '34') | 'A34' | 'A:34'
-        data -- string of new cell contents: '34.213'
-
-        return -- the overwriten data: 'data before Write()'
-        """
-        self.modified = True
-
-        if not sheet in self._data:
-            raise ValueError("easyio.XLS.Read: {0} not in sheets: {1}".format(sheet, str(self._data.keys())))
-
-        position = ParseTablePosition(position)
-
-        pre = self._data[sheet][position[1]][position[0]]
-        self._data[sheet][position[1]][position[0]] = data
-        return pre
-
-    def __del__(self):
-        if self.modified:
-            file = Workbook()
-            for s in self._data.keys():
-                sheet = file.add_sheet(s)
-                for r in range(len(self._data[s])):
-                    for c in range(len(self._data[s][r])):
-                        sheet.write(r, c, self._data[s][r][c])
-            file.save(self.path)
-
-
-# TODO: .docx support
-class DOCX:
-    def __init__():
-        0
-
-
-# TODO: .txt support
-class TXT:
-    def __init__():
-        0
-
-
-# Constant list of supported file types
-FILES = {"csv": CSV, "xlsx": XLSX, "xls": XLS, "docx": DOCX, "txt": TXT}
-
-# Returns the file extension
-def FileType(path: str) -> str:
-    match = re.match("^.*\\.(\\w+)$", path)
-    if len(match.regs) > 1:
-        return path[match.regs[-1][0] : match.regs[-1][1]]
-    else:
-        print("ERROR [" + path + "] has no File Type")
-        return ""
-
-
-# Used to read once
-def Read(path: str):
-    filetype = FileType(path)
-    if len(filetype) == 0:
-        return -1
-
-    if filetype == "csv":
-        table = []
-        for l in open(path).readlines():
-            table.append(l.split(","))
-        return table
-    elif "xls" in filetype:
-        sheets = {}
-        excel = open_workbook(path) if filetype == "xlsx" else open_workbook_xls(path)
-        for s in excel.sheets():
-            sheets[s.name] = []
-            for r in range(s.nrows):
-                sheets[s.name].append([])
-                for c in s.row(r):
-                    sheets[s.name][-1].append(c.value)
-        return sheets
-    elif filetype == "docx":
-        0
-    elif filetype == "txt":
-        0
-    else:
-        return print("easyio.Read: ERROR [" + filetype + "] Not Supported")
-
-
-# TODO: Write Function
-# Used to write once
-def Write(path: str, position, data: str):
-    0
-
-
-def ParseTablePosition(position) -> tuple[int, int]:
-    if type(position) is str:
-        if ":" in position:
-            c, r = position.split(":", 1)
-        else:
-            match = re.match("^([a-zA-Z]+)(\\d+)$", position)
-            if len(match.regs) > 1:
-                c = position[match.regs[1][0] : match.regs[1][1]]
-                r = position[match.regs[2][0] : match.regs[2][1]]
-        if c and r:
-            position = (ord(c.upper()) - 65, int(r) - 1)
-        else:
-            raise ValueError("easyio.ParseTablePosition: c:{0}, r:{1} is invalid position".format(c, r))
-    elif type(position) is tuple:
-        c, r = position
-        if type(c) is int or type(c) is float or re.match("^\\d+$", c):
-            c = int(c)
-        elif re.match("^[A-Za-z]+$", c):
-            c = c.upper()
-            col = 0
-            i = 1
-            for char in c:
-                col += (ord(char) - 65) * i
-                i *= 26
-            c = col
-        r = int(r)
-        position = (c, r - 1)
-    else:
-        raise TypeError("easyio.ParseTablePosition: position: {0} is not <class 'str'> or <class 'tuple'>".format(str(type(position))))
-
-    if type(position) is tuple and type(position[0]) is int and type(position[1]) is int:
-        return position
-    else:
-        raise ValueError("easyio.ParseTablePosition: c:{0}, r:{1} is invalid position".format(c, r))
-
-
-def File(path: str):
-    type = FileType(path)
-    if len(type) > 0:
-        for t in FILES.keys():
-            if type == t:
-                return FILES[t](path)
-    else:
-        return None
-
-
 "\\\\10.122.0.134\\Reflectance Lab\\Reflectance Calibrations\\PermaFlect Targets\\18%PF-0921-4400\\Info.txt"
 
 
 def WordOccurences(doc, variable: str) -> None:
     occurences = []
     for p in doc.paragraphs:
-        if re.match("^.*<" + variable + ">.*$", p.text):
+        if re.match(f"^.*<{variable}>.*$", p.text):
             occurences.append(p)
     for t in doc.tables:
         for c in t._cells:
-            if re.match("^.*<" + variable + ">.*$", c.text):
+            if re.match(f"^.*<{variable}>.*$", c.text):
                 occurences.append(c)
     for s in doc.sections:
         for p in s.header.paragraphs:
-            if re.match("^.*<" + variable + ">.*$", p.text):
+            if re.match(f"^.*<{variable}>.*$", p.text):
                 occurences.append(p)
         for t in s.header.tables:
             for c in t._cells:
-                if re.match("^.*<" + variable + ">.*$", c.text):
+                if re.match(f"^.*<{variable}>.*$", c.text):
                     occurences.append(c)
     return occurences
 
 
 def ReplaceText(doc, variable: str, value: str):
     for e in WordOccurences(doc, variable):
-        e.text = e.text.replace("<" + variable + ">", value)
+        e.text = e.text.replace(f"<{variable}>", value)
 
 
 def ReplacePicture(doc, variable: str, path: str, size):
@@ -278,18 +135,30 @@ def ReplacePicture(doc, variable: str, path: str, size):
         e.add_run().add_picture(path, width=Inches(size[0]), height=Inches(size[1]))
 
 
-def getDarkScanPath(day: int, month: int, year: int, instrument: str):
+def dateFromString(string: str) -> tuple:
+    regex = re.search("(\\d+)[\\/\\-_ ](\\d+)[\\/\\-_ ](\\d+)", string)
+    if not regex or len(regex.regs) != 4:
+        return 0
+    else:
+        return (
+            int(string[regex.regs[1][0] : regex.regs[1][1]]),
+            int(string[regex.regs[2][0] : regex.regs[2][1]]),
+            int(string[regex.regs[3][0] : regex.regs[3][1]]),
+        )
+
+
+def getDarkScanPath(date: str, instrument: str):
     dark_scans_dir = "\\\\lssvr-fs01\\Reflectance Lab\\Reflectance Calibrations\\stray light Summary.xls_files\\"
     datedDarkScans = []
-    expr = "^.*" + str(month) + "( |-|_)" + str(day) + "\\1\\0*" + str(year) + ".*$"
     for dir in os.listdir(dark_scans_dir):
-        if re.match(expr, dir):
+        dirDate = dateFromString(dir)
+        if dirDate and dirDate[0] == date[0] and dirDate[2] == date[2] and dirDate[2] == date[2]:
             datedDarkScans.append(dir)
 
     darkScan = ""
     if len(datedDarkScans) > 1:
         for dir in datedDarkScans:
-            if re.match("^.*" + str(year) + "\\s*" + instrument + ".*$", dir, re.IGNORECASE):
+            if re.match(f"^.*{date[2]}\\s*{instrument}.*$", dir, re.IGNORECASE):
                 darkScan = dir
         if darkScan == "":
             return ""
@@ -304,17 +173,25 @@ def getDarkScanPath(day: int, month: int, year: int, instrument: str):
         return ""
 
 
-def Execute(path: str, model, serial_number, date, instrument):
-    print(date)
+def savePDF(input, output):
+    return 0
+    # wordToPdf(input, output)
+
+
+def Execute(path: str, model: str, serial_number: str, date: tuple, n_r: str, instrument: str):
+    print("\n\nExecuting...")
     if not os.path.exists(path + "Equation1.Sample.Cycle1.Equation1.csv"):
         return "Invalid Folder: Equation1.Sample.Cycle1.Equation1.csv DOES NOT EXIST"
-    darkScanPath = getDarkScanPath(date[1], date[0], date[2], instrument)
+    darkScanPath = getDarkScanPath(date, instrument)
     if len(darkScanPath) == 0:
         return "No Stray Light Scan found for date"
 
-    data = File(path + "Equation1.Sample.Cycle1.Equation1.csv")  # easyio.
-    darkScan = File(darkScanPath)  # easyio.
+    data = CSV(path + "Equation1.Sample.Cycle1.Equation1.csv")
+    print(f"Located Raw Data at {path}Equation1.Sample.Cycle1.Equation1.csv")
+    darkScan = CSV(darkScanPath)
+    print(f"Located Stray Light Scan at {darkScanPath}")
     doc = Document("Ref-Cal-Cert-Template.docx")
+    print("Located Template docx at \\Ref-Cal-Cert-Template.docx")
 
     # MS% in column B
     Ms = [float(data.Read(("B", i))) for i in range(2, 2257)]
@@ -2578,22 +2455,50 @@ def Execute(path: str, model, serial_number, date, instrument):
     ]
 
     corr = [((Ms[i] * 0.01 - Mh[i] * 0.01) / (1 - Mh[i] * 0.01)) * Rr[i] for i in range(2250)]
+    print("Calculated corrected data")
 
     txt = open(path + model + ".txt", "w")
     string = serial_number + "\nThis data is for reference only\n"
-    for i in range(2250):
-        string += "{0}\t{1}\n".format(str(i + 250), str(corr[i]))
-    txt.write(string)
+    stringdata = [f"{str(i + 250)}\t{str(corr[i])}\n" for i in range(2250)]
+    stringdata.insert(0, f"{serial_number}\nThis data is for reference only\n")
+    txt.write("".join(stringdata))
+    print(f"Generated {model}.txt file")
 
     ReplaceText(doc, "sn", serial_number)
-    ReplaceText(doc, "DATE", "{0}/{1}/{2}".format(str(date[0]), str(date[1]), str(date[2])))
+    ReplaceText(doc, "DATE", f"{date[0]}/{date[1]}/{date[2]}")
     ReplaceText(doc, "model", model)
     ReplaceText(doc, "isA", "X" if instrument in "aA" else "")
     ReplaceText(doc, "isB", "X" if instrument in "bB" else "")
     ReplaceText(doc, "isC", "X" if instrument in "cC" else "")
+    uncertainty_table = doc.tables[2]._cells
+    uncertainty = []
+    offset = -1
+    for i in range(9):
+        if n_r == uncertainty_table[i].text:
+            offset = i
+            break
+    if offset == -1:
+        return "Invalid Nominal Reflectance"
+    for i in range(9 + offset, len(uncertainty_table), 9):
+        u = float(uncertainty_table[i].text)
+        w = int(uncertainty_table[i - offset].text)
+        j = 0
+        while u < 1:
+            u *= 10
+            j += 1
+        uncertainty.append((w, j))
+
+    print("Found Uncertainty values in template")
 
     for i in range(25, 251, 5):
-        ReplaceText(doc, "w" + str(i), str(round(corr[i * 10 - 250 - 1] * 1e4) / 1e4))
+        u = 0
+        for j in uncertainty:
+            if j[0] == i * 10:
+                u = j[1]
+                break
+        ref = round(corr[i * 10 - 250 - 1] * pow(10, u)) / pow(10, u)
+        ReplaceText(doc, f"w{i}", str(ref))
+    print("Replaced metadata in template docx (SN, Model, date, corrected data table)")
 
     plt.plot(range(250, 2500), corr, color="black")
     # plt.title("Graph I: 8°/Hemispherical Spectral Reflectance")
@@ -2601,15 +2506,17 @@ def Execute(path: str, model, serial_number, date, instrument):
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
     plt.axis([250, 2500, 0, 0.25])
+    print("Created corrected data plot")
     plt.savefig("temp.png")
-
+    print("Saved plot as temp.png")
     ReplacePicture(doc, "graph", "temp.png", (7, 5.5))
+    print("Replaced graph with temp.png in template docx")
+    os.remove("temp.png")
+    print("Removed temp.png")
 
     doc.save(path + "DM-01400-010Rev04 Gray cal cert non NVLAP.docx")
-
-    os.remove("temp.png")
-
-    convert(path + "DM-01400-010Rev04 Gray cal cert non NVLAP.docx", path + serial_number + ".pdf")
+    print(f"Saved template docx at {path}DM-01400-010Rev04 Gray cal cert non NVLAP.docx")
+    savePDF(f"{path}DM-01400-010Rev04 Gray cal cert non NVLAP.docx", path + serial_number + ".pdf")
 
     return True
 
@@ -2626,53 +2533,62 @@ def main() -> None:
         ],
         [sg.Text("")],
         [
-            sg.Input("Date: Y-M-D", size=(20, 1), key="Date"),
-            sg.CalendarButton("Select"),
             sg.Text("Instrument"),
-            sg.DropDown(["A", "B", "C"], "A", size=(7, 1)),
+            sg.DropDown(["A", "B", "C"], "A", size=(7, 1), key="Instrument"),
+            sg.CalendarButton("Select Date", target=(4, 3), format="%m/%d/%Y"),
+            sg.Text(key="Date", size=(20, 1)),
         ],
         [sg.Text("")],
-        [sg.Button("Execute")],
+        [
+            sg.Text("Nominal Reflectance"),
+            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "A", size=(7, 1), key="Nominal Reflectance"),
+            sg.Button("Execute"),
+        ],
         [sg.Text(key="error_message", size=(40, 3))],
     ]
     window = sg.Window(title="Ref Cal Auto", layout=layout, margins=(0, 20))
+    status = False
     while True:
         event, values = window.read()
 
         if event == "Execute":
             if not values["Browse"]:
                 result = "No Folder Selected"
-            elif values["Date"] == "Date: Y-M-D":
+            elif not window["Date"].DisplayText:
                 result = "No date selected"
             elif not values["Serial Number"]:
                 result = "No Serial Number Input"
             elif not values["Model"]:
                 result = "No Model Input"
             else:
-                date = re.match("^(\\d+).(\\d+).(\\d+).*$", values["Date"])
+                date = dateFromString(window["Date"].DisplayText)
                 if not date:
                     result = "Invalid Date"
                 else:
+                    print(date)
                     result = Execute(
                         values["Browse"] + "/",
                         values["Model"],
                         values["Serial Number"],
-                        (
-                            int(values["Date"][date.regs[3][0] : date.regs[3][1]]),
-                            int(values["Date"][date.regs[2][0] : date.regs[2][1]]),
-                            int(values["Date"][date.regs[1][0] : date.regs[1][1]]),
-                        ),
-                        "C",
+                        date,
+                        values["Nominal Reflectance"],
+                        values["Instrument"],
                     )
 
             if result is True:
+                status = True
+                print("Success")
                 break
             else:
+                status = False
                 window["error_message"].update(result)
         if event == sg.WIN_CLOSED:
             break
     window.close()
+    if not status:
+        print("Press enter to exit")
+        input("")
 
 
 main()
-# print(Execute("C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\", "CSRT-18-020", "18%PF-0921-4398", (1, 4, 2021), "C"))
+# print(Execute("C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\", "CSRT-18-020", "PF-0921-4398", dateFromString("1/6/2021"), "99%", "B"))
