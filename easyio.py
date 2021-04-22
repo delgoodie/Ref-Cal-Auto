@@ -184,7 +184,7 @@ def Read(path: str):
         return print("easyio.Read: ERROR [" + filetype + "] Not Supported")
 
 
-# TODO: Write Function
+# TO DO: Write Function
 # Used to write once
 def Write(path: str, position, data: str):
     0

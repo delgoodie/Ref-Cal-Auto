@@ -3,11 +3,14 @@ import re
 import PySimpleGUI as sg
 from docx import Document
 from docx.shared import Inches
+import matplotlib.pyplot as plt
+import docx2pdf
 
 # from easyio import File
-import matplotlib.pyplot as plt
 
-# from docx2pdf import convert as wordToPdf
+# "\\\\10.122.0.134\\Reflectance Lab\\Reflectance Calibrations\\PermaFlect Targets\\18%PF-0921-4400\\Info.txt"
+
+
 def ParseTablePosition(position) -> tuple[int, int]:
     if type(position) is str:
         if ":" in position:
@@ -101,9 +104,6 @@ class CSV:
             file.close()
 
 
-"\\\\10.122.0.134\\Reflectance Lab\\Reflectance Calibrations\\PermaFlect Targets\\18%PF-0921-4400\\Info.txt"
-
-
 def WordOccurences(doc, variable: str) -> None:
     occurences = []
     for p in doc.paragraphs:
@@ -174,8 +174,7 @@ def getDarkScanPath(date: str, instrument: str):
 
 
 def savePDF(input, output):
-    return 0
-    # wordToPdf(input, output)
+    docx2pdf.convert(input, output)
 
 
 def Execute(path: str, model: str, serial_number: str, date: tuple, n_r: str, instrument: str):
@@ -2541,7 +2540,7 @@ def main() -> None:
         [sg.Text("")],
         [
             sg.Text("Nominal Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "A", size=(7, 1), key="Nominal Reflectance"),
+            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Nominal Reflectance"),
             sg.Button("Execute"),
         ],
         [sg.Text(key="error_message", size=(40, 3))],
