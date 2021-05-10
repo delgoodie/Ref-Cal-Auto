@@ -1,0 +1,13 @@
+Internal (no req)
+In-Cube 900-1600
+    1000 0.18-0.21
+    1500 0.18-0.21
+    flatness
+Penatmaster 250-2500
+    1000 0.18-0.21
+    1500 0.18-0.21
+    flatness
+Penatmaster 800-1600
+    1000 0.18-0.21
+    1500 0.18-0.21
+    flatness
