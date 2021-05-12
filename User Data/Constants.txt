@@ -1,0 +1,3 @@
+TARGET_PATH = \\10.122.0.134\Reflectance Lab\Reflectance Calibrations\PermaFlect Targets\
+STRAY_LIGHT_PATH = \\lssvr-fs01\Reflectance Lab\Reflectance Calibrations\stray light Summary.xls_files\
+USB_PATH = E:\

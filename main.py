@@ -4,55 +4,57 @@ from os import listdir as os_listdir
 from os import system as os_system
 from re import search as re_search
 from re import match as re_match
-from shutil import copyfile
+from shutil import copyfile as shutil_copyfile
 import PySimpleGUI as sg
 from docx import Document as docx_document
 from docx.shared import Inches
 import matplotlib.pyplot as plt
 from docx2pdf import convert as docx2pdf_convert
 from math import ceil, floor, log10
+from threading import Timer
+from time import perf_counter
 
-TARGET_DIR = "\\\\10.122.0.134\\Reflectance Lab\\Reflectance Calibrations\\PermaFlect Targets\\"
-STRAY_LIGHT_DIR = "\\\\lssvr-fs01\\Reflectance Lab\\Reflectance Calibrations\\stray light Summary.xls_files\\"
-USB_PATH = "D:\\"
-PRODUCTION = True
+"""
+NOTES:
 
-log event is not firing and not causing execute to ever run
+* methods are imported and renamed with underscores so as to keep naming clear and concise will still importing the mininmum number of methods
 
-def ParseTablePosition(position) -> tuple[int, int]:
-    if type(position) is str:
-        if ":" in position:
-            c, r = position.split(":", 1)
-        else:
-            match = re_match("([a-zA-Z]+)(\\d+)", position)
-            if len(match.regs) > 1:
-                c = match.group(1)
-                r = match.group(2)
-        if c and r:
-            position = (ord(c.upper()) - 65, int(r) - 1)
-        else:
-            raise ValueError(f"easyio.ParseTablePosition: c:{c}, r:{r} is invalid position")
-    elif type(position) is tuple:
-        c, r = position
-        if type(c) is int or type(c) is float or re_match("\\d+", c):
-            c = int(c)
-        elif re_match("[A-Za-z]+", c):
-            c = c.upper()
-            col = 0
-            i = 1
-            for char in c:
-                col += (ord(char) - 65) * i
-                i *= 26
-            c = col
-        r = int(r)
-        position = (c, r - 1)
+* Execute function is seperated into many parts so that each part can be wrapped with @debug.
+
+* the debug function is a wrapper which logs the time taken by a function, handels errors, and logs status
+
+* window and params were made global since debug and other functions require them (yeah, it had to be)
+
+* this script depends on a relative folder /User Data which must contain Rr.txt, Clients.txt, Constants.txt, and Ref-Cal-Cert-Template.docx
+
+"""
+
+constants = open("User Data\\Constants.txt").read()
+
+TARGET_DIR = re_search("TARGET_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
+STRAY_LIGHT_DIR = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
+USB_PATH = re_search("USB_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
+
+last = None
+cl_int = {}
+for l in open("User Data\\Clients.txt").readlines():
+    if re_match("\\s+.+", l):
+        reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", l)
+        if reg:
+            cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
+        elif re_match("\\s+flatness", l):
+            cl_int[last]["flatness"] = True
     else:
-        raise TypeError(f"easyio.ParseTablePosition: position: {type(position)} is not <class 'str'> or <class 'tuple'>")
+        last = l.strip()
+        cl_int[last] = {}
+CLIENTS = cl_int
+window = 0
+params = {}
 
-    if type(position) is tuple and type(position[0]) is int and type(position[1]) is int:
-        return position
-    else:
-        raise ValueError(f"easyio.ParseTablePosition: c:{c}, r:{r} is invalid position")
+print("Constants & Globals initialized...")
+
+
+# region HELPERS
 
 
 class CSV:
@@ -64,6 +66,41 @@ class CSV:
             self._data.append(l.split(","))
         file.close()
         self.modified = False
+
+    def _ParseTablePosition(position) -> tuple[int, int]:
+        if type(position) is str:
+            if ":" in position:
+                c, r = position.split(":", 1)
+            else:
+                match = re_match("([a-zA-Z]+)(\\d+)", position)
+                if len(match.regs) > 1:
+                    c = match.group(1)
+                    r = match.group(2)
+            if c and r:
+                position = (ord(c.upper()) - 65, int(r) - 1)
+            else:
+                raise ValueError(f"CSV._ParseTablePosition: c:{c}, r:{r} is invalid position")
+        elif type(position) is tuple:
+            c, r = position
+            if type(c) is int or type(c) is float or re_match("\\d+", c):
+                c = int(c)
+            elif re_match("[A-Za-z]+", c):
+                c = c.upper()
+                col = 0
+                i = 1
+                for char in c:
+                    col += (ord(char) - 65) * i
+                    i *= 26
+                c = col
+            r = int(r)
+            position = (c, r - 1)
+        else:
+            raise TypeError(f"CSV._ParseTablePosition: position: {type(position)} is not <class 'str'> or <class 'tuple'>")
+
+        if type(position) is tuple and type(position[0]) is int and type(position[1]) is int:
+            return position
+        else:
+            raise ValueError(f"CSV._ParseTablePosition: c:{c}, r:{r} is invalid position")
 
     def Read(self, position="*"):
         """
@@ -77,7 +114,7 @@ class CSV:
         if position == "*":
             return self._data
         else:
-            position = ParseTablePosition(position)
+            position = self._ParseTablePosition(position)
             if position[1] < len(self._data) and position[0] < len(self._data[position[0]]):
                 return self._data[position[1]][position[0]]
             else:
@@ -93,7 +130,7 @@ class CSV:
 
         return -- the overwriten data: 'data before Write()'
         """
-        position = ParseTablePosition(position)
+        position = self._ParseTablePosition(position)
 
         pre = self._data[position[1]][position[0]]
         self._data[position[1]][position[0]] = data
@@ -152,7 +189,152 @@ class DOCX:
             self.doc.save(self.path)
 
 
+def DateFromString(string: str) -> tuple:
+    """
+    Retrieves date from string containing a date in the following formats:
+
+    MM/DD/YY(YY)
+
+    MM-DD-YY(YY)
+
+    NOTE: Shorthand and Full years will be converted to full years
+
+    i.e. 21 => 2021, 1985 => 1985
+
+    @return tuple containing (MM, DD, YYYY)
+    """
+    search = re_search("(\\d+)[\\/\\-](\\d+)[\\/\\-](\\d+)", string)
+    if not search or len(search.regs) != 4:
+        return 0
+    else:
+        month = int(search.group(1))
+        day = int(search.group(2))
+        year = int(search.group(3))
+        # check if year is in shorthand, '21, or longhand, 2021 -> convert to longhand
+        if log10(year) > 3:
+            return (month, day, year)
+        else:
+            return (month, day, 2000 + year)
+
+
+def LeftPad(string, length):
+    """
+    Left Pad a string with ' ' (spaces) so that it takes on the length of @param length
+    """
+    while len(string) < length:
+        string += " "
+    return string
+
+
+def debug(func):
+    """
+    Debug Wrapper to catch errors, display timestamp, and log status
+
+    use:
+
+    @debug
+
+    def MyFunc
+    """
+    global window
+
+    def wrap(*args, **kwargs):
+        start = perf_counter()
+        print(LeftPad(func.__name__, 40), end="")
+        window["Log"].update(func.__name__)
+        result = False
+        try:
+            result = func(*args, **kwargs)
+        except Exception as e:
+            print("\n\n[Exception Raised]")
+            print("Copy error message and send to:")
+            print("wdelgiudice@labsphere.com\n")
+            print("Error Message:")
+            print(e)
+            window["Log"].update("ERROR: GO TO CONSOLE")
+            return False
+        end = perf_counter()
+        print(f"√  {round(1000*(end - start))} ms")
+        window["Log"].update(f"{func.__name__}   √")
+        return result
+
+    return wrap
+
+
+# endregion
+
+# region EXECUTION STEPS
+
+
+@debug
+def GetStrayLightPaths(date) -> list[str]:
+    """
+    Returns array of relative paths from STRAY_LIGHT_DIR to stray light folders written at dates that match the @param date
+
+    @param date - must be tuple in (DD:int, MM:int, YYYY:int) format
+
+    @return - List[str] of relative paths from STRAY_LIGHT_DIR
+    """
+    result = []
+    for dir in os_listdir(STRAY_LIGHT_DIR):
+        dirDate = DateFromString(dir)
+        if dirDate and dirDate[0] == date[0] and dirDate[1] == date[1] and dirDate[2] == date[2]:
+            result.append(dir)
+    return result
+
+
+@debug
+def TestExecuteConditions(values):
+    """
+    Tests for conditions before executing script
+
+    * Makes sure all fields in the form have been filled out
+    * Verifies paths of stray light scan and root directory
+    * Verifies existance of dependant local files
+
+    @return - 0 for Tests Passed, str for error message
+    """
+    result = 0
+    if not values["Browse"]:
+        result = "No Folder Selected"
+    elif not values["Model"]:
+        result = "No Model Specified"
+    elif not values["Serial Number"]:
+        result = "No Serial Number Specified"
+    elif len(values["Serial Number"]) < 5:
+        result = "Serial Number Invalid (too short)"
+    elif not values["Nominal Reflectance"]:
+        result = "No Nominal Reflectance Selected"
+    elif not window["Date"]:
+        result = "No Date Selected"
+    elif not values["Client"]:
+        result = "No Client Selected"
+    elif not values["Instrument"]:
+        result = "No Instrument Selected"
+    elif values["Stray Light Path"] == "Stray Light Path (not selected)":
+        result = "No Stray Light Path Specified"
+    elif not os_path_exists(f"{values['Browse']}\\Equation1.Sample.Cycle1.Equation1.csv"):
+        result = "Invalid Root Folder: Equation1.Sample.Cycle1.Equation1.csv DOES NOT EXIST"
+    elif not os_path_exists(f"{values['Stray Light Path']}\\Equation1.Sample.Cycle1.Equation1.csv"):
+        result = "No Stray Light Scan found"
+    elif not os_path_exists("User Data\\Ref-Cal-Cert-Template.docx"):
+        result = "No Ref-Cal-Cert-Template.docx found in script directory"
+    return result
+
+
+@debug
+def GetRr():
+    """
+    Reads Rr data from \\User Data\\Rr.txt
+    """
+    return [float(l) for l in open("User Data\\Rr.txt").readlines()]
+
+
+@debug
 def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
+    """
+    Calculates Corrected data from raw data, stray light data, and Rr
+    """
     # MS% in column B
     Ms = {}
     i = 2
@@ -174,124 +356,63 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
     return c_d
 
 
-def SavePDF(input, output) -> None:
-    docx2pdf_convert(input, output)
+@debug
+def TestClientRequirements(corrected_data):
+    """
+    Tests Corrected Data against Client Requirements from selected Client
 
-
-def DateFromString(string: str) -> tuple:
-    search = re_search("(\\d+)[\\/\\-](\\d+)[\\/\\-](\\d+)", string)
-    if not search or len(search.regs) != 4:
-        return 0
-    else:
-        month = int(search.group(1))
-        day = int(search.group(2))
-        year = int(search.group(3))
-        # check if year is in shorthand, '21, or longhand, 2021 -> convert to longhand
-        if log10(year) > 3:
-            return (month, day, year)
-        else:
-            return (month, day, 2000 + year)
-
-
-def GetStrayLightPaths(date) -> list[str]:
-    result = []
-    for dir in os_listdir(STRAY_LIGHT_DIR):
-        dirDate = DateFromString(dir)
-        if dirDate and dirDate[0] == date[0] and dirDate[1] == date[1] and dirDate[2] == date[2]:
-            result.append(dir)
-    return result
-
-
-def PopulateClients() -> dict:
-    last = None
-    clients = {}
-    for l in open("Clients.txt").readlines():
-        if re_match("\\s+.+", l):
-            reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", l)
-            if reg:
-                clients[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
-            elif re_match("\\s+flatness", l):
-                clients[last]["flatness"] = True
-        else:
-            last = l.strip()
-            clients[last] = {}
-    return clients
-
-
-def Execute(params: dict) -> bool:
-    print("Checking Conditions    ", end="")
-    if not os_path_exists(f"{params['path']}Equation1.Sample.Cycle1.Equation1.csv"):
-        raise Exception("Invalid Folder Selected: Equation1.Sample.Cycle1.Equation1.csv DOES NOT EXIST")
-    if not os_path_exists(f"{params['stray light path']}Equation1.Sample.Cycle1.Equation1.csv"):
-        raise Exception("No Stray Light Scan found")
-    if not os_path_exists("Ref-Cal-Cert-Template.docx"):
-        raise Exception("No Ref-Cal-Cert-Template.docx found in script directory")
-    raw = CSV(f"{params['path']}Equation1.Sample.Cycle1.Equation1.csv")
-    strayLight = CSV(f"{params['stray light path']}Equation1.Sample.Cycle1.Equation1.csv")
-    doc = DOCX("Ref-Cal-Cert-Template.docx")
-    docxName = f"DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx"
-    print("√")
-
-    print("Retrieving Rr data from /Rr.txt    ", end="")
-    Rr = [float(l) for l in open("Rr.txt").readlines()]
-    print("√")
-
-    print("Calculating Corrected Data    ", end="")
-    corrected_data = CorrectData(raw, strayLight, Rr)
-    print("√")
-
-    print("Testing Client Requirements from /Client.txt    ", end="")
+    @return - 0 if data passed tests, str if data failed for error msg
+    """
+    global params
+    error = 0
     for w in params["client"]:
         if type(w) is int:
             if corrected_data[w] < params["client"][w][0] or corrected_data[w] > params["client"][w][1]:
-                raise Exception(
-                    f"Corrected Data did not pass client requirements ({corrected_data[w]} @ {w} did not meet {params['client'][w][0]} <= reflectance <= {params['client'][w][1]} @ {w})"
-                )
+                error = f"Corrected Data did not pass client requirements ({corrected_data[w]} @ {w} did not meet {params['client'][w][0]} <= reflectance <= {params['client'][w][1]} @ {w})"
         elif w == "flatness":
             if corrected_data[1500] - corrected_data[1000] > 2 or corrected_data[1500] - corrected_data[1000] < 1:
-                raise Exception(
-                    f"Corrected Data did not pass client requirements ({corrected_data[1500] - corrected_data[1000]} did not meet flatness requirements 1 <= [ref @ 1500] - [ref @ 1000] <= 2)"
-                )
-    print("√")
+                error = f"Corrected Data did not pass client requirements ({corrected_data[1500] - corrected_data[1000]} did not meet flatness requirements 1 <= [ref @ 1500] - [ref @ 1000] <= 2)"
+    return error
 
-    print(f"Generating {params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt file    ", end="")
+
+@debug
+def SaveTextFile(corrected_data):
+    """
+    Saves corrected data as text file under (last four of sn)-(model name).txt
+    """
+    # print(f"Generating {params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt file    ")
     txt = open(f"{params['path']}{params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt", "w")
     stringdata = [f"{w}\t{corrected_data[w]}\n" for w in corrected_data]
     stringdata.insert(0, f"{params['serial number']}\nThis data is for reference only\n")
     txt.write("".join(stringdata))
     del stringdata
-    print("√")
+    return True
 
-    print(f"Replacing docx template metadata (sn, model, instrument, date)    ", end="")
+
+@debug
+def WriteWordMeta(doc):
+    """
+    Writes metadata to word docx template
+
+    * sn
+    * date
+    * model
+    * instrument (A, B, C)
+    """
     doc.ReplaceText("sn", params["serial number"])
     doc.ReplaceText("DATE", f"{params['date'][0]}/{params['date'][1]}/{params['date'][2]}")
     doc.ReplaceText("model", params["model"])
     doc.ReplaceText("isA", "X" if params["instrument"] in "aA" else "")
     doc.ReplaceText("isB", "X" if params["instrument"] in "bB" else "")
     doc.ReplaceText("isC", "X" if params["instrument"] in "cC" else "")
-    print("√")
+    return True
 
-    # print("Finding Uncertainty Values    ", end="")
-    # uncertainty_table = doc.doc.tables[2]._cells
-    # uncertainty = []
-    # offset = -1
-    # for i in range(9):
-    #     if params["nominal reflectance"] == uncertainty_table[i].text:
-    #         offset = i
-    #         break
-    # if offset == -1:
-    #     return "Invalid Nominal Reflectance"
-    # for i in range(9 + offset, len(uncertainty_table), 9):
-    #     u = float(uncertainty_table[i].text)
-    #     w = int(uncertainty_table[i - offset].text)
-    #     j = 0
-    #     while u < 1:
-    #         u *= 10
-    #         j += 1
-    #     uncertainty.append((w, j))
-    # print("√")
 
-    print("Inserting Rounded Corrected Data into docx template table    ", end="")
+@debug
+def WriteWordData(doc, corrected_data):
+    """
+    Writes corrected reflectance data to word docx cert in in table
+    """
     for i in range(25, 251, 5):
         if i * 10 in corrected_data:
             v = corrected_data[i * 10]
@@ -301,9 +422,19 @@ def Execute(params: dict) -> bool:
             while len(v) < 5:
                 v += "0"
             doc.ReplaceText(f"w{i}", str(v))
-    print("√")
+            return True
 
-    print("Creating graph at /temp.png    ", end="")
+
+@debug
+def WriteWordGraph(doc, corrected_data):
+    """
+    Writes graph to word docx cert
+
+    * Creates graph with matlib from corrected data
+    * Saves graph to temp.png
+    * Writes image to docx cert
+    * Deletes temp.png
+    """
     plt_x = [w for w in corrected_data]
     plt_y = [corrected_data[w] for w in corrected_data]
     plt.plot(plt_x, plt_y, color="black")
@@ -311,50 +442,139 @@ def Execute(params: dict) -> bool:
     plt.ylabel("Reflectance Factor")
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
-    plt.axis(
-        [
-            250,
-            2500,
-            floor(min(plt_y) * 4) * 0.25,
-            ceil(max(plt_y) * 4) * 0.25,
-        ]
-    )
+    plt.axis([250, 2500, floor(min(plt_y) * 4) * 0.25, ceil(max(plt_y) * 4) * 0.25])
     plt.savefig("temp.png")
-    print("√")
-
-    print("Replacing graph with /temp.png in docx template    ", end="")
     doc.ReplacePicture("graph", "temp.png", (7, 5.5))
-    print("√")
-
-    print("Removing /temp.png    ", end="")
     os_remove("temp.png")
-    print("√")
-
-    print(f"Saving docx to {params['path']}{docxName}    ", end="")
-    doc.Save(f"{params['path']}{docxName}")
-    print("√")
-
-    print(f"Saving pdf of docx to {params['path']}{params['serial number']}.pdf", end="")
-    SavePDF(f"{params['path']}{docxName}", f"{params['path']}{params['serial number']}.pdf")
-    print("√")
-
-    print(f"Copying data from {params['path']} to {USB_PATH}", end="")
-    if os_path_exists(USB_PATH):
-        copyfile(f"{params['path']}{docxName}", f"{USB_PATH}{docxName}")
-        copyfile(f"{params['path']}{params['serial number']}.pdf", f"{USB_PATH}{params['serial number']}.pdf")
-        print("√")
-    else:
-        print(f"\nNo USB located at {USB_PATH}")
     return True
 
 
-def main() -> None:
-    Params = {}
-    executeOnNextFrame = False
+@debug
+def SaveWord(doc):
+    """
+    Saves word doc cert
 
-    print("Retrieving Clients from /Clients.txt    ", end="")
-    Clients = PopulateClients()
-    print("√")
+    This function exists simply to wrap DOCX.Save() method so the debug wrapper can be used
+    """
+    doc.Save(f"{params['path']}DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx")
+    return True
+
+
+@debug
+def SavePdf() -> None:
+    """
+    Copies word doc cert as pdf
+
+    This function exists simply to wrap docx2pdf_covert() method so the debug wrapper can be used
+    """
+    docx2pdf_convert(
+        f"{params['path']}DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx",
+        f"{params['path']}{params['serial number']}.pdf",
+    )
+    return True
+
+
+@debug
+def CopyToUsb():
+    """
+    Copies raw data txt file and final cert pdf file to USB path specified in User Data\\Constants.txt
+    """
+    if os_path_exists(USB_PATH):
+        docxName = f"DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx"
+        shutil_copyfile(f"{params['path']}{docxName}", f"{USB_PATH}{docxName}")
+        shutil_copyfile(f"{params['path']}{params['serial number']}.pdf", f"{USB_PATH}{params['serial number']}.pdf")
+    return True
+
+
+# endregion
+
+
+def Execute() -> bool:
+    """
+    Execute function sequentially calls steps and exits if any step fails:
+
+    Execute is done in many steps so that each step can be wrapped with @debug for easy debugging if any point fails
+
+    * Get Rr
+    * Corrected Data
+    * Test Client Requirements
+    * Save Text File
+    * Write Word Meta
+    * Write Word Data
+    * Write Word Graph
+    * Save Word
+    * Save Pdf
+    * Copy To Usb
+    """
+    global params
+    global window
+
+    raw = CSV(f"{params['path']}Equation1.Sample.Cycle1.Equation1.csv")
+    strayLight = CSV(f"{params['stray light path']}Equation1.Sample.Cycle1.Equation1.csv")
+    doc = DOCX("User Data\\Ref-Cal-Cert-Template.docx")
+
+    Rr = GetRr()
+    if not Rr:
+        return False
+
+    corrected_data = CorrectData(raw, strayLight, Rr)
+    if not corrected_data:
+        return False
+
+    msg = TestClientRequirements(corrected_data)
+    if type(msg) is str:
+        window["Log"].update(msg)
+        print(msg)
+        return False
+
+    if not SaveTextFile(corrected_data):
+        return False
+
+    if not WriteWordMeta(doc):
+        return False
+
+    if not WriteWordData(doc, corrected_data):
+        return False
+
+    if not WriteWordGraph(doc, corrected_data):
+        return False
+
+    if not SaveWord(doc):
+        return False
+
+    if not SavePdf():
+        return False
+
+    if not CopyToUsb():
+        return False
+
+    return True
+
+
+def AsyncExecute():
+    """
+    This function exists so the Execute Function can occur on a seperate thread, while the GUI continues to receive updates
+    """
+    global window
+    global params
+    result = Execute()
+    if result:
+        window["Log"].update("Finished: SUCCESS")
+        os_system(f"start {params['path']} .")
+        if os_path_exists(USB_PATH):
+            os_system(f"start {USB_PATH} .")
+        window.close()
+
+
+def main() -> None:
+    """
+    Main function:
+
+    * Initializes GUI
+    * Handles Events
+    """
+    global window
+    global params
 
     layout = [
         # 0
@@ -374,7 +594,7 @@ def main() -> None:
             sg.Text("Nominal Reflectance"),
             sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Nominal Reflectance", readonly=True),
             sg.Text("Client"),
-            sg.DropDown([c for c in Clients], "no client selected", size=(15, 1), key="Client", readonly=True),
+            sg.DropDown([c for c in CLIENTS], "no client selected", size=(15, 1), key="Client", readonly=True),
         ],
         # 5
         [sg.Text("")],
@@ -407,10 +627,10 @@ def main() -> None:
     ]
 
     window = sg.Window(title="Ref Cal Auto", layout=layout, margins=(0, 20))
-    status = True
 
     while True:
         event, values = window.read()
+
         if event == "Date":
             slps = GetStrayLightPaths(DateFromString(values["Date"]))
             if len(slps) == 0:
@@ -420,71 +640,40 @@ def main() -> None:
         elif event == "Stray Light Dropdown":
             window["Stray Light Path"].update(f"{STRAY_LIGHT_DIR}{values['Stray Light Dropdown']}")
         elif event == "Execute":
-            if not values["Browse"]:
-                result = "No Folder Selected"
-            elif not values["Model"]:
-                result = "No Model Specified"
-            elif not values["Serial Number"]:
-                result = "No Serial Number Specified"
-            elif len(values["Serial Number"]) < 5:
-                result = "Serial Number Invalid (too short)"
-            elif not values["Nominal Reflectance"]:
-                result = "No Nominal Reflectance Selected"
-            elif not window["Date"]:
-                result = "No Date Selected"
-            elif not values["Client"]:
-                result = "No Client Selected"
-            elif not values["Instrument"]:
-                result = "No Instrument Selected"
-            elif values["Stray Light Path"] == "Stray Light Path (not selected)":
-                result = "No Stray Light Path Specified"
-            else:
-                result = "Executing..."
-                Params = {
+            error = TestExecuteConditions(values)
+            if error == 0:
+                params = {
                     "path": f"{values['Browse']}\\",
                     "model": values["Model"],
                     "serial number": values["Serial Number"],
                     "nominal reflectance": values["Nominal Reflectance"],
-                    "client": Clients[values["Client"]],
+                    "client": CLIENTS[values["Client"]],
                     "date": DateFromString(values["Date"]),
                     "instrument": values["Instrument"],
                     "stray light path": f"{values['Stray Light Path']}\\",
                 }
-                executeOnNextFrame = True
-            window["Log"].update(result)
-        elif event == "Log":
-            if executeOnNextFrame:
-                try:
-                    status = Execute(Params)
-                    window["Log"].update("Finished: SUCCESS")
-                    os_system(f"start {values['Browse']}\\ .")
-                    if os_path_exists(USB_PATH):
-                        os_system(f"start {USB_PATH} .")
-                    break
-                except Exception as e:
-                    result = e
-                    print(f"\ncopy-paste error message and send to:\n\twdelgiudice@labsphere.com\n\nError Message:\n{e}")
-                    window["Log"].update("SEE TERMINAL FOR INSTRUCTIONS")
+                window["Log"].update("Executing...")
+                Timer(1.0, AsyncExecute).start()
+            else:
+                window["Log"].update(error)
         elif event == sg.WIN_CLOSED:
             break
     window.close()
-    if not status:
-        print("Press enter to exit")
-        input("")
 
 
-if PRODUCTION:
-    main()
-else:
-    Execute(
-        {
-            "path": "C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\",
-            "model": "CSRT-18-020",
-            "nominal reflectance": "99%",
-            "serial number": "PF-0921-4398",
-            "date": DateFromString("1/6/2021"),
-            "instrument": "B",
-            "stray light path": "\\\\lssvr-fs01\\Reflectance Lab\\Reflectance Calibrations\\stray light Summary.xls_files\\Stray Light 4-7-2021 C\\",
-            "client": {1000: (0.1, 0.21), 1500: (0.1, 0.21)},
-        }
-    )
+# !ENTRY POINT
+main()
+
+# !TESTING
+# Execute(
+#     {
+#         "path": "C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\",
+#         "model": "CSRT-18-020",
+#         "nominal reflectance": "99%",
+#         "serial number": "PF-0921-4398",
+#         "date": DateFromString("1/6/2021"),
+#         "instrument": "B",
+#         "stray light path": "\\\\lssvr-fs01\\Reflectance Lab\\Reflectance Calibrations\\stray light Summary.xls_files\\Stray Light 4-7-2021 C\\",
+#         "client": {1000: (0.1, 0.21), 1500: (0.1, 0.21)},
+#     }
+# )
