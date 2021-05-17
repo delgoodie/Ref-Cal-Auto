@@ -2,6 +2,8 @@ from os.path import exists as os_path_exists
 from os import remove as os_remove
 from os import listdir as os_listdir
 from os import system as os_system
+from os import _exit as os__exit
+from sys import exc_info as sys_exc_info
 from re import search as re_search
 from re import match as re_match
 from shutil import copyfile as shutil_copyfile
@@ -15,7 +17,23 @@ from threading import Timer
 from time import perf_counter
 
 """
-NOTES:
+OVERVIEW:
+
+This program is designed to automate the Reflectance Calibration Task in the RefLab.
+Once a scan is taken, the scanning device creates a folder with data from the scan, found in /Equation1.Sample.Cycle1.Equation1.csv, and other intermediate csv files
+Then five steps are required of the user, which are automated in this script:
+
+* Correcting the raw data (achieved by copying data from /Equation1.Sample.Cycle1.Equation1.csv to \GrayReflectCalA.xls which functional corrects data)
+* Creating a txt file which holds corrected data (must be named (last four of serial number)-(model name))
+* Creating a certificate word doc and transfering metadata (model, serial number, date, ...), corrected data (from \GrayReflectCalA.xls), and a graph of the corrected data (from \GrayReflectCalA.xls)
+* Creating a PDF cert of the word doc
+* Copying the PDF and txt file to a USB stick
+
+Also note that an important part of the automation process is locating the Stray Light Scan performed on the same day as the reflectance scan, which is used in correcting the raw data
+
+CODE NOTES:
+
+* When compiling this script, copy the /User Data/ folder into the same directory as main.exe
 
 * methods are imported and renamed with underscores so as to keep naming clear and concise will still importing the mininmum number of methods
 
@@ -25,36 +43,154 @@ NOTES:
 
 * window and params were made global since debug and other functions require them (yeah, it had to be)
 
-* this script depends on a relative folder /User Data which must contain Rr.txt, Clients.txt, Constants.txt, and Ref-Cal-Cert-Template.docx
+* this script depends on a relative folder /User Data which must contain rr.txt, clients.txt, config.txt, and template.docx
 
 """
 
-constants = open("User Data\\Constants.txt").read()
+# region SETUP
 
-TARGET_DIR = re_search("TARGET_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
-STRAY_LIGHT_DIR = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
-USB_PATH = re_search("USB_PATH\\s+=\\s+(.+)\\n", constants).group(1).strip()
+# checks for local folder User Data
+if not os_path_exists("User Data\\rr.txt"):
+    raise Exception("User Data\\rr.txt Does Not Exist")
+if not os_path_exists("User Data\\config.txt"):
+    raise Exception("User Data\\config.txt Does Not Exist")
+if not os_path_exists("User Data\\template.docx"):
+    raise Exception("User Data\\template.docx Does Not Exist")
 
-last = None
+# Reads config data for constant paths
+config = open("User Data\\config.txt").read()
+
+TARGET_DIR = re_search("TARGET_PATH\\s+=\\s+(.+)($|\\n)", config).group(1).strip()
+STRAY_LIGHT_DIR = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)($|\\n)", config).group(1).strip()
+USB_PATH = re_search("USB_PATH\\s*=\\s*(.+)($|\\n)", config).group(1).strip()
+
+del config
+
+# reads client data to generate clients dropdown and populate CLIENTS requirements
+
 cl_int = {}
-for l in open("User Data\\Clients.txt").readlines():
-    if re_match("\\s+.+", l):
-        reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", l)
-        if reg:
-            cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
-        elif re_match("\\s+flatness", l):
-            cl_int[last]["flatness"] = True
-    else:
-        last = l.strip()
-        cl_int[last] = {}
+if os_path_exists("User Data\\clients.txt"):
+    last = None
+    for l in open("User Data\\clients.txt").readlines():
+        if re_match("\\s+.+", l):
+            reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", l)
+            if reg:
+                cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
+            elif re_match("\\s+flatness", l):
+                cl_int[last]["flatness"] = True
+        else:
+            last = l.strip()
+            cl_int[last] = {}
+    del last, reg, l
 CLIENTS = cl_int
+"""
+CLIENTS dict follows structure:
+{
+    (str)"client name": { (client name is displayed in client dropdown)
+        (int)wavelength: (tuple)((float)lower_limit, (float)upper_limit),
+        ...,
+        (optionally)
+        (str)"flatness": (bool)True (!this value is ignored)
+    },
+    ...
+}
+"""
+del cl_int
+
+# deletes are used to clean up global scope
+
 window = 0
-params = {}
+params = 0
 
 print("Constants & Globals initialized...")
 
+# endregion
 
 # region HELPERS
+
+
+class Date:
+    def __init__(self, month: int, day: int, year: int):
+        self.month = month
+        self.day = day
+        self.year = year
+
+    def valid(self):
+        return self.month >= 1 and self.month <= 12 and self.day > 0 and self.day <= 31 and self.year > 2000 and self.year < 3000
+
+    def __eq__(self, other):
+        return type(other) is Date and self.month == other.month and self.day == other.day and self.year == other.year
+
+    def __str__(self):
+        return f"{self.month}/{self.day}/{self.year}"
+
+
+class Parameters:
+    def __init__(
+        self,
+        root_path: str = None,
+        geometry: str = None,
+        material: str = None,
+        serial_number: str = None,
+        reflectance: int = None,
+        requirements: dict = None,
+        instrument: str = None,
+        date: Date = None,
+        stray_light_path: str = None,
+    ):
+        if len(root_path) > 0 and not root_path[-1] in ["\\", "/"]:
+            root_path += "\\"
+        if type(reflectance) is str:
+            search = re_search("(\\d+)\\%", reflectance)
+            if search:
+                reflectance = int(search.group(1))
+        if type(date) is str:
+            date = DateFromString(date)
+        if len(stray_light_path) > 0 and not stray_light_path[-1] in ["\\", "/"]:
+            stray_light_path += "\\"
+
+        self.root_path = root_path
+        self.geometry = geometry
+        self.material = material
+        self.serial_number = serial_number
+        self.reflectance = reflectance
+        self.requirements = requirements
+        self.instrument = instrument
+        self.date = date
+        self.stray_light_path = stray_light_path
+
+        # derived property
+        self.model = "derived model name"
+
+    def isValid(self):
+        if self.root_path and type(self.root_path) is str and os_path_exists(self.root_path):
+            if self.material and self.material in ["Specraflect", "Permaflect"]:
+                if self.geometry and type(self.geometry) is str and self.geometry in ["Target", "Puck"]:
+                    if self.serial_number and type(self.geometry) is str and len(self.serial_number) > 4:
+                        if self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100:
+                            if True or self.requirements and type(self.requirements) is dict:
+                                if self.instrument and self.instrument in ["A", "B", "C"]:
+                                    if self.date and type(self.date) is Date and self.date.valid():
+                                        if self.stray_light_path and type(self.stray_light_path) is str and os_path_exists(self.stray_light_path):
+                                            return True
+                                        else:
+                                            return "Invalid Stray Light Path"
+                                    else:
+                                        return "Invalid Date"
+                                else:
+                                    return "Invalid Instrument"
+                            else:
+                                return "Invalid Requirements (or client)"
+                        else:
+                            return "Invalid Reflectance"
+                    else:
+                        return "Invalid Serial Number"
+                else:
+                    return "Invalid Type"
+            else:
+                return "Invalid Material"
+        else:
+            return "Invalid Root Path"
 
 
 class CSV:
@@ -67,7 +203,7 @@ class CSV:
         file.close()
         self.modified = False
 
-    def _ParseTablePosition(position) -> tuple[int, int]:
+    def _ParseTablePosition(self, position) -> tuple[int, int]:
         if type(position) is str:
             if ":" in position:
                 c, r = position.split(":", 1)
@@ -104,21 +240,21 @@ class CSV:
 
     def Read(self, position="*"):
         """
-        Read from csv table cell[s]
+        Read from csv table cell(s)
 
         position -- cell position: '*', (0, 34) | ('A', 34) | ('A', '34') | 'A34' | 'A:34'
-        if position == '*' then a 2D array of all cols & rows will be returned
+        if position is '*' then a 2D array of all cols & rows will be returned
 
         return -- data at position
         """
         if position == "*":
             return self._data
         else:
-            position = self._ParseTablePosition(position)
-            if position[1] < len(self._data) and position[0] < len(self._data[position[0]]):
-                return self._data[position[1]][position[0]]
+            parsed_pos = self._ParseTablePosition(position)
+            if parsed_pos[1] < len(self._data) and parsed_pos[0] < len(self._data[parsed_pos[0]]):
+                return self._data[parsed_pos[1]][parsed_pos[0]]
             else:
-                raise IndexError(f"easyio.CSV.Read: position:{position} not in cols: {len(self._data[0])}, rows: {len(self._data)}")
+                raise IndexError(f"easyio.CSV.Read: position:{parsed_pos} not in cols: {len(self._data[0])}, rows: {len(self._data)}")
 
     def Write(self, position, data: str = ""):
         self.modified = True
@@ -130,10 +266,10 @@ class CSV:
 
         return -- the overwriten data: 'data before Write()'
         """
-        position = self._ParseTablePosition(position)
+        parsed_pos = self._ParseTablePosition(position)
 
-        pre = self._data[position[1]][position[0]]
-        self._data[position[1]][position[0]] = data
+        pre = self._data[parsed_pos[1]][parsed_pos[0]]
+        self._data[parsed_pos[1]][parsed_pos[0]] = data
         return pre
 
     def __del__(self):
@@ -189,7 +325,7 @@ class DOCX:
             self.doc.save(self.path)
 
 
-def DateFromString(string: str) -> tuple:
+def DateFromString(string: str):
     """
     Retrieves date from string containing a date in the following formats:
 
@@ -205,16 +341,15 @@ def DateFromString(string: str) -> tuple:
     """
     search = re_search("(\\d+)[\\/\\-](\\d+)[\\/\\-](\\d+)", string)
     if not search or len(search.regs) != 4:
-        return 0
+        return -1
     else:
         month = int(search.group(1))
         day = int(search.group(2))
         year = int(search.group(3))
         # check if year is in shorthand, '21, or longhand, 2021 -> convert to longhand
-        if log10(year) > 3:
-            return (month, day, year)
-        else:
-            return (month, day, 2000 + year)
+        if log10(year) <= 3:
+            year += 2000
+    return Date(month, day, year)
 
 
 def LeftPad(string, length):
@@ -246,15 +381,18 @@ def debug(func):
         try:
             result = func(*args, **kwargs)
         except Exception as e:
+            exc_type, exc_obj, exc_tb = sys_exc_info()
             print("\n\n[Exception Raised]")
-            print("Copy error message and send to:")
-            print("wdelgiudice@labsphere.com\n")
+            print("Send email to:    wdelgiudice@labsphere.com    with the following information:")
+            print("* error message (seen below) \n* all form data (model, sn, date, client, etc)\n* anything different about this specific scan")
             print("Error Message:")
-            print(e)
+            print("TYPE: ", exc_type)
+            print("LINE: ", exc_tb.tb_lineno)
+            print("ERROR: ", e)
             window["Log"].update("ERROR: GO TO CONSOLE")
             return False
         end = perf_counter()
-        print(f"√  {round(1000*(end - start))} ms")
+        print(f"√  {round(1000 * (end - start))} ms")
         window["Log"].update(f"{func.__name__}   √")
         return result
 
@@ -267,7 +405,7 @@ def debug(func):
 
 
 @debug
-def GetStrayLightPaths(date) -> list[str]:
+def GetStrayLightPaths(date: Date) -> list[str]:
     """
     Returns array of relative paths from STRAY_LIGHT_DIR to stray light folders written at dates that match the @param date
 
@@ -278,56 +416,17 @@ def GetStrayLightPaths(date) -> list[str]:
     result = []
     for dir in os_listdir(STRAY_LIGHT_DIR):
         dirDate = DateFromString(dir)
-        if dirDate and dirDate[0] == date[0] and dirDate[1] == date[1] and dirDate[2] == date[2]:
+        if dirDate != -1 and dirDate == date:
             result.append(dir)
     return result
 
 
 @debug
-def TestExecuteConditions(values):
+def Get_rr():
     """
-    Tests for conditions before executing script
-
-    * Makes sure all fields in the form have been filled out
-    * Verifies paths of stray light scan and root directory
-    * Verifies existance of dependant local files
-
-    @return - 0 for Tests Passed, str for error message
+    Reads Rr data from \\User Data\\rr.txt
     """
-    result = 0
-    if not values["Browse"]:
-        result = "No Folder Selected"
-    elif not values["Model"]:
-        result = "No Model Specified"
-    elif not values["Serial Number"]:
-        result = "No Serial Number Specified"
-    elif len(values["Serial Number"]) < 5:
-        result = "Serial Number Invalid (too short)"
-    elif not values["Nominal Reflectance"]:
-        result = "No Nominal Reflectance Selected"
-    elif not window["Date"]:
-        result = "No Date Selected"
-    elif not values["Client"]:
-        result = "No Client Selected"
-    elif not values["Instrument"]:
-        result = "No Instrument Selected"
-    elif values["Stray Light Path"] == "Stray Light Path (not selected)":
-        result = "No Stray Light Path Specified"
-    elif not os_path_exists(f"{values['Browse']}\\Equation1.Sample.Cycle1.Equation1.csv"):
-        result = "Invalid Root Folder: Equation1.Sample.Cycle1.Equation1.csv DOES NOT EXIST"
-    elif not os_path_exists(f"{values['Stray Light Path']}\\Equation1.Sample.Cycle1.Equation1.csv"):
-        result = "No Stray Light Scan found"
-    elif not os_path_exists("User Data\\Ref-Cal-Cert-Template.docx"):
-        result = "No Ref-Cal-Cert-Template.docx found in script directory"
-    return result
-
-
-@debug
-def GetRr():
-    """
-    Reads Rr data from \\User Data\\Rr.txt
-    """
-    return [float(l) for l in open("User Data\\Rr.txt").readlines()]
+    return [float(l) for l in open("User Data\\rr.txt").readlines()]
 
 
 @debug
@@ -365,13 +464,14 @@ def TestClientRequirements(corrected_data):
     """
     global params
     error = 0
-    for w in params["client"]:
+    for w in params.requirements:
         if type(w) is int:
-            if corrected_data[w] < params["client"][w][0] or corrected_data[w] > params["client"][w][1]:
-                error = f"Corrected Data did not pass client requirements ({corrected_data[w]} @ {w} did not meet {params['client'][w][0]} <= reflectance <= {params['client'][w][1]} @ {w})"
+            if corrected_data[w] < params.requirements[w][0] or corrected_data[w] > params.requirements[w][1]:
+                error = f"Corrected Data did not pass client requirements ({corrected_data[w]} @ {w} did not meet {params.requirements[w][0]} <= reflectance <= {params.requirements[w][1]} @ {w})"
         elif w == "flatness":
-            if corrected_data[1500] - corrected_data[1000] > 2 or corrected_data[1500] - corrected_data[1000] < 1:
-                error = f"Corrected Data did not pass client requirements ({corrected_data[1500] - corrected_data[1000]} did not meet flatness requirements 1 <= [ref @ 1500] - [ref @ 1000] <= 2)"
+            dif = (corrected_data[1500] - corrected_data[1000]) * 100
+            if dif < 1 or dif > 2:
+                error = f"Corrected Data did not pass client requirements ({dif} did not meet flatness requirements 1 <= ([ref @ 1500] - [ref @ 1000]) * 100 <= 2)"
     return error
 
 
@@ -381,9 +481,9 @@ def SaveTextFile(corrected_data):
     Saves corrected data as text file under (last four of sn)-(model name).txt
     """
     # print(f"Generating {params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt file    ")
-    txt = open(f"{params['path']}{params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt", "w")
+    txt = open(f"{params.root_path}{params.serial_number[-4:len(params.serial_number)]}-{params.model}.txt", "w")
     stringdata = [f"{w}\t{corrected_data[w]}\n" for w in corrected_data]
-    stringdata.insert(0, f"{params['serial number']}\nThis data is for reference only\n")
+    stringdata.insert(0, f"{params.serial_number}\nThis data is for reference only\n")
     txt.write("".join(stringdata))
     del stringdata
     return True
@@ -399,12 +499,12 @@ def WriteWordMeta(doc):
     * model
     * instrument (A, B, C)
     """
-    doc.ReplaceText("sn", params["serial number"])
-    doc.ReplaceText("DATE", f"{params['date'][0]}/{params['date'][1]}/{params['date'][2]}")
-    doc.ReplaceText("model", params["model"])
-    doc.ReplaceText("isA", "X" if params["instrument"] in "aA" else "")
-    doc.ReplaceText("isB", "X" if params["instrument"] in "bB" else "")
-    doc.ReplaceText("isC", "X" if params["instrument"] in "cC" else "")
+    doc.ReplaceText("sn", params.serial_number)
+    doc.ReplaceText("DATE", str(params.date))
+    doc.ReplaceText("model", params.model)
+    doc.ReplaceText("isA", "X" if params.instrument == "A" else "")
+    doc.ReplaceText("isB", "X" if params.instrument == "B" else "")
+    doc.ReplaceText("isC", "X" if params.instrument == "C" else "")
     return True
 
 
@@ -456,7 +556,7 @@ def SaveWord(doc):
 
     This function exists simply to wrap DOCX.Save() method so the debug wrapper can be used
     """
-    doc.Save(f"{params['path']}DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx")
+    doc.Save(f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx")
     return True
 
 
@@ -467,9 +567,10 @@ def SavePdf() -> None:
 
     This function exists simply to wrap docx2pdf_covert() method so the debug wrapper can be used
     """
+    print("")
     docx2pdf_convert(
-        f"{params['path']}DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx",
-        f"{params['path']}{params['serial number']}.pdf",
+        f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx",
+        f"{params.root_path}{params.serial_number}.pdf",
     )
     return True
 
@@ -477,12 +578,12 @@ def SavePdf() -> None:
 @debug
 def CopyToUsb():
     """
-    Copies raw data txt file and final cert pdf file to USB path specified in User Data\\Constants.txt
+    Copies raw data txt file and final cert pdf file to USB path specified in User Data\\config.txt
     """
     if os_path_exists(USB_PATH):
-        docxName = f"DM-01400-010Rev04 {'99' if params['nominal reflectance'] == '99%' else 'Gray'} cal cert non NVLAP.docx"
-        shutil_copyfile(f"{params['path']}{docxName}", f"{USB_PATH}{docxName}")
-        shutil_copyfile(f"{params['path']}{params['serial number']}.pdf", f"{USB_PATH}{params['serial number']}.pdf")
+        docxName = f"DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx"
+        shutil_copyfile(f"{params.root_path}{docxName}", f"{USB_PATH}{docxName}")
+        shutil_copyfile(f"{params.root_path}{params.serial_number}.pdf", f"{USB_PATH}{params.serial_number}.pdf")
     return True
 
 
@@ -509,15 +610,15 @@ def Execute() -> bool:
     global params
     global window
 
-    raw = CSV(f"{params['path']}Equation1.Sample.Cycle1.Equation1.csv")
-    strayLight = CSV(f"{params['stray light path']}Equation1.Sample.Cycle1.Equation1.csv")
-    doc = DOCX("User Data\\Ref-Cal-Cert-Template.docx")
+    raw = CSV(f"{params.root_path}Equation1.Sample.Cycle1.Equation1.csv")
+    strayLight = CSV(f"{params.stray_light_path}Equation1.Sample.Cycle1.Equation1.csv")
+    doc = DOCX("User Data\\template.docx")
 
-    Rr = GetRr()
-    if not Rr:
+    rr = Get_rr()
+    if not rr:
         return False
 
-    corrected_data = CorrectData(raw, strayLight, Rr)
+    corrected_data = CorrectData(raw, strayLight, rr)
     if not corrected_data:
         return False
 
@@ -560,10 +661,11 @@ def AsyncExecute():
     result = Execute()
     if result:
         window["Log"].update("Finished: SUCCESS")
-        os_system(f"start {params['path']} .")
+        os_system(f'start "" "{params.root_path}"')
         if os_path_exists(USB_PATH):
-            os_system(f"start {USB_PATH} .")
+            os_system(f'start "" "{USB_PATH}"')
         window.close()
+        os__exit(0)
 
 
 def main() -> None:
@@ -580,82 +682,97 @@ def main() -> None:
         # 0
         [sg.Text("Root Folder", font="30px")],
         # 1
-        [sg.FolderBrowse(), sg.Input("(must have Equation1.Sample.Cycle1.Equation1.csv)", size=(108, 1), readonly=True)],
+        [sg.FolderBrowse(), sg.Input("(must have Equation1.Sample.Cycle1.Equation1.csv)", size=(82, 1), readonly=True)],
         # 2
         [sg.Text("")],
         # 3
         [sg.Text("Info", font="30px")],
         # 4
         [
-            sg.Text("Model", size=(4, 1)),
-            sg.Input("", size=(20, 1), key="Model"),
+            sg.Text("Geometry", size=(10, 1)),
+            sg.Text("Material", size=(10, 1)),
             sg.Text("Serial Number", size=(10, 1)),
             sg.Input("", size=(20, 1), key="Serial Number"),
             sg.Text("Nominal Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Nominal Reflectance", readonly=True),
-            sg.Text("Client"),
-            sg.DropDown([c for c in CLIENTS], "no client selected", size=(15, 1), key="Client", readonly=True),
+            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Nominal Reflectance", readonly=False),
         ],
         # 5
-        [sg.Text("")],
+        [
+            sg.Radio("Target", "Geometry", default=True),
+            sg.Radio("Spectraflect", "Material", default=True, pad=(10, 0)),
+        ],
         # 6
-        [sg.Text("Stray Light Scan", font="30px")],
+        [
+            sg.Radio("Puck", "Geometry", default=False),
+            sg.Radio("Permaflect", "Material", default=False, pad=(16, 0)),
+            sg.Text("Client", pad=((30, 0), 0)),
+            sg.DropDown([c for c in CLIENTS], "no client selected", size=(52, 1), key="Client", readonly=True),
+        ],
         # 7
+        [sg.Text("")],
+        # 8
+        [sg.Text("Stray Light Scan", font="30px")],
+        # 9
         [
             sg.Text("Instrument"),
             sg.DropDown(["A", "B", "C"], "A", size=(5, 1), key="Instrument", readonly=True),
             sg.CalendarButton(
                 "Select Date",
-                target=(7, 3),
+                target=(9, 3),
                 format="%m/%d/%Y",
                 enable_events=True,
             ),
             sg.Input(key="Date", size=(10, 1), enable_events=True, readonly=True),
-            sg.DropDown([], "No date selected", size=(56, 1), enable_events=True, key="Stray Light Dropdown", readonly=True),
-            sg.FolderBrowse(button_text="Manual Browse", target=(8, 0)),
+            sg.DropDown([], "No date selected", size=(45, 1), enable_events=True, key="Stray Light Dropdown", readonly=True),
         ],
-        # 8
-        [sg.Input("Stray Light Path (not selected)", key="Stray Light Path", size=(117, 1), readonly=True)],
-        # 9
-        [sg.Text("")],
         # 10
-        [sg.Button("Execute", size=(20, 1), font="30px", pad=(290, 0))],
+        [
+            sg.FolderBrowse(button_text="Manual Browse", target=(10, 0)),
+            sg.Input("Stray Light Path (not selected)", key="Stray Light Path", size=(75, 1), readonly=True),
+        ],
         # 11
-        [sg.Text("Log", font="30px")],
+        [sg.Text("")],
         # 12
-        [sg.Input(key="Log", size=(117, 5), readonly=True, enable_events=True)],
+        [sg.Button("Execute", size=(20, 1), font="30px", pad=(210, 0))],
+        # 13
+        [sg.Text("Log", font="30px")],
+        # 14
+        [sg.Input(key="Log", size=(91, 5), readonly=True, enable_events=True)],
     ]
 
     window = sg.Window(title="Ref Cal Auto", layout=layout, margins=(0, 20))
 
     while True:
         event, values = window.read()
-
         if event == "Date":
-            slps = GetStrayLightPaths(DateFromString(values["Date"]))
-            if len(slps) == 0:
-                window["Stray Light Dropdown"].update(values=[])
-            else:
-                window["Stray Light Dropdown"].update(values=slps)
+            date = DateFromString(values["Date"])
+            if date != -1:
+                slps = GetStrayLightPaths(date)
+                if len(slps) == 0:
+                    window["Stray Light Dropdown"].update(values=[])
+                else:
+                    window["Stray Light Dropdown"].update(values=slps)
         elif event == "Stray Light Dropdown":
             window["Stray Light Path"].update(f"{STRAY_LIGHT_DIR}{values['Stray Light Dropdown']}")
         elif event == "Execute":
-            error = TestExecuteConditions(values)
-            if error == 0:
-                params = {
-                    "path": f"{values['Browse']}\\",
-                    "model": values["Model"],
-                    "serial number": values["Serial Number"],
-                    "nominal reflectance": values["Nominal Reflectance"],
-                    "client": CLIENTS[values["Client"]],
-                    "date": DateFromString(values["Date"]),
-                    "instrument": values["Instrument"],
-                    "stray light path": f"{values['Stray Light Path']}\\",
-                }
+            params = Parameters(
+                values["Browse"],
+                "Target" if values[1] else "Puck",
+                "Specraflect" if values[3] else "Permaflect",
+                values["Serial Number"],
+                values["Nominal Reflectance"],
+                CLIENTS[values["Client"]] if values["Client"] in CLIENTS else {},
+                values["Instrument"],
+                values["Date"],
+                values["Stray Light Path"],
+            )
+            error = params.isValid()
+            if not type(error) is str:
                 window["Log"].update("Executing...")
                 Timer(1.0, AsyncExecute).start()
             else:
                 window["Log"].update(error)
+                print("Execution Conditions not met:     ", error, "\n")
         elif event == sg.WIN_CLOSED:
             break
     window.close()
@@ -668,7 +785,6 @@ main()
 # Execute(
 #     {
 #         "path": "C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\",
-#         "model": "CSRT-18-020",
 #         "nominal reflectance": "99%",
 #         "serial number": "PF-0921-4398",
 #         "date": DateFromString("1/6/2021"),
