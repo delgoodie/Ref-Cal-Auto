@@ -1,3 +1,38 @@
 TARGET_PATH = \\10.122.0.134\Reflectance Lab\Reflectance Calibrations\PermaFlect Targets\
 STRAY_LIGHT_PATH = \\lssvr-fs01\Reflectance Lab\Reflectance Calibrations\stray light Summary.xls_files\
 USB_PATH = E:\
+
+REQUIREMENTS
+    Standard 99
+        250 0.9-0.995
+        300 0.925-0.995
+        400-700 0.985-0.995
+        750-1600 0.975-0.995
+        1650-2350 0.915-0.995
+
+        flatness 0.02
+
+    Internal (no req)
+
+    In-Cube 900-1600
+        1000 0.18-0.21
+        1500 0.18-0.21
+        flatness
+
+    Pentamaster (f) 250-2500
+        1000 0.18-0.21
+        1500 0.18-0.21
+        flatness
+
+    Pentamaster 250-2500
+        1000 0.18-0.21
+        1500 0.18-0.21
+
+    Pentamaster (f) 800-1600
+        1000 0.18-0.21
+        1500 0.18-0.21
+        flatness
+
+    Pentamaster 800-1600
+        1000 0.18-0.21
+        1500 0.18-0.21

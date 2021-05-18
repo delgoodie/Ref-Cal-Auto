@@ -130,6 +130,7 @@ class Parameters:
         self,
         root_path: str = None,
         geometry: str = None,
+        size: int = None,
         material: str = None,
         serial_number: str = None,
         reflectance: int = None,
@@ -151,6 +152,7 @@ class Parameters:
 
         self.root_path = root_path
         self.geometry = geometry
+        self.size = size
         self.material = material
         self.serial_number = serial_number
         self.reflectance = reflectance
@@ -160,31 +162,34 @@ class Parameters:
         self.stray_light_path = stray_light_path
 
         # derived property
-        self.model = "derived model name"
+        self.model = f"{'SRT' if self.geometry == 'Target' else 'SRS'}-{self.reflectance}-{self.size}"
 
     def isValid(self):
         if self.root_path and type(self.root_path) is str and os_path_exists(self.root_path):
-            if self.material and self.material in ["Specraflect", "Permaflect"]:
+            if self.material and type(self.material) is str and self.material in ["Spectraflect", "Permaflect"]:
                 if self.geometry and type(self.geometry) is str and self.geometry in ["Target", "Puck"]:
-                    if self.serial_number and type(self.geometry) is str and len(self.serial_number) > 4:
-                        if self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100:
-                            if True or self.requirements and type(self.requirements) is dict:
-                                if self.instrument and self.instrument in ["A", "B", "C"]:
-                                    if self.date and type(self.date) is Date and self.date.valid():
-                                        if self.stray_light_path and type(self.stray_light_path) is str and os_path_exists(self.stray_light_path):
-                                            return True
+                    if self.size and type(self.size) is int:
+                        if self.serial_number and type(self.serial_number) is str and len(self.serial_number) > 4:
+                            if self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100:
+                                if True or self.requirements and type(self.requirements) is dict:
+                                    if self.instrument and self.instrument in ["A", "B", "C"]:
+                                        if self.date and type(self.date) is Date and self.date.valid():
+                                            if self.stray_light_path and type(self.stray_light_path) is str and os_path_exists(self.stray_light_path):
+                                                return True
+                                            else:
+                                                return "Invalid Stray Light Path"
                                         else:
-                                            return "Invalid Stray Light Path"
+                                            return "Invalid Date"
                                     else:
-                                        return "Invalid Date"
+                                        return "Invalid Instrument"
                                 else:
-                                    return "Invalid Instrument"
+                                    return "Invalid Requirements (or client)"
                             else:
-                                return "Invalid Requirements (or client)"
+                                return "Invalid Reflectance"
                         else:
-                            return "Invalid Reflectance"
+                            return "Invalid Serial Number"
                     else:
-                        return "Invalid Serial Number"
+                        return "Invalid [Puck or Target] Size"
                 else:
                     return "Invalid Type"
             else:
@@ -444,13 +449,18 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
     Mh = {}
     i = 2
     while len(strayLight.Read(("A", i))) > 0:
-        Mh[int(float(strayLight.Read(("A", i))))] = float(strayLight.Read(("B", i)))
+        s_l = float(strayLight.Read(("B", i)))
+        s_l = abs(s_l)
+        s_l = min(s_l, 100)
+        Mh[int(float(strayLight.Read(("A", i))))] = s_l
         i += 1
 
     c_d = {}
     for w in Mh:
         if w >= 250 and w <= 2500:
-            c_d[w] = ((Ms[w] * 0.01 - Mh[w] * 0.01) / (1 - Mh[w] * 0.01)) * Rr[w - 250]
+            c_d[w] = round((Ms[w] * 0.01 - Mh[w] * 0.01) * (1 / (1 - Mh[w] * 0.01)) * Rr[w - 250], 4)
+            if c_d[w] < 0:
+                print(f"negative c_d: {c_d[w]} @ {w}")
 
     return c_d
 
@@ -509,20 +519,50 @@ def WriteWordMeta(doc):
 
 
 @debug
-def WriteWordData(doc, corrected_data):
+def WriteWordData(doc: DOCX, corrected_data: dict):
     """
     Writes corrected reflectance data to word docx cert in in table
+
+    Rounds reflectance to nearest value in uncertainty chart and uses values for sig fig rounding
     """
-    for i in range(25, 251, 5):
-        if i * 10 in corrected_data:
-            v = corrected_data[i * 10]
-            # rounding to 2 sig figs
-            v = round(v, 2 - int(floor(log10(abs(v)))))
-            v = str(v)
-            while len(v) < 5:
-                v += "0"
-            doc.ReplaceText(f"w{i}", str(v))
-            return True
+    uncertainty_table = doc.doc.tables[2]._cells
+    uncertainty = {}
+    offset = -1
+    uncertainty_ref = 0
+    UNCERTAINTY_COLS = 9
+    for i in range(1, UNCERTAINTY_COLS):
+        col_ref = int(re_search("(\\d+)%", uncertainty_table[i].text).group(1))
+        if params.reflectance == col_ref or not uncertainty_ref or abs(params.reflectance - col_ref) < abs(params.reflectance - uncertainty_ref):
+            uncertainty_ref = col_ref
+            offset = i
+
+    for i in range(UNCERTAINTY_COLS + offset, len(uncertainty_table), UNCERTAINTY_COLS):
+        w = int(uncertainty_table[i - offset].text)
+        u = 0
+        non_zero = False
+        uncert = uncertainty_table[i].text
+        for c in uncertainty_table[i].text:
+            if c in "123456789":
+                u += 1
+                non_zero = True
+            elif c == "0" and non_zero:
+                u += 1
+        uncertainty[w] = u
+
+    for w in range(250, 2510, 50):
+        if w in corrected_data:
+            v = corrected_data[w]
+            u = uncertainty[w]
+            if v and u:
+                # rounding to sig figs based off uncertainty table
+                v = round(v, u - int(floor(log10(abs(v)))))
+                v = str(v)
+                while len(v) < u + 3:
+                    v += "0"
+                doc.ReplaceText(f"w{str(int(w / 10))}", v)
+            else:
+                print(f"No corrected_data at wavelength: {w}")
+    return True
 
 
 @debug
@@ -542,7 +582,7 @@ def WriteWordGraph(doc, corrected_data):
     plt.ylabel("Reflectance Factor")
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
-    plt.axis([250, 2500, floor(min(plt_y) * 4) * 0.25, ceil(max(plt_y) * 4) * 0.25])
+    plt.axis([250, 2500, 0, ceil(max(plt_y) * 4) * 0.25])
     plt.savefig("temp.png")
     doc.ReplacePicture("graph", "temp.png", (7, 5.5))
     os_remove("temp.png")
@@ -689,54 +729,51 @@ def main() -> None:
         [sg.Text("Info", font="30px")],
         # 4
         [
-            sg.Text("Geometry", size=(10, 1)),
-            sg.Text("Material", size=(10, 1)),
-            sg.Text("Serial Number", size=(10, 1)),
-            sg.Input("", size=(20, 1), key="Serial Number"),
-            sg.Text("Nominal Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Nominal Reflectance", readonly=False),
+            sg.Text("Geometry"),
+            sg.DropDown(["Target", "Puck"], "Target", key="Geometry", size=(9, 1), readonly=True, enable_events=True),
+            sg.Text("Material"),
+            sg.DropDown(["Spectraflect", "Permaflect"], "Spectraflect", key="Material", size=(13, 1), readonly=True, enable_events=True),
+            sg.Text("Target Length", size=(11, 0), key="Size Name"),
+            sg.Input("", size=(6, 1), key="Size"),
+            sg.Text("Reflectance"),
+            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
         ],
         # 5
         [
-            sg.Radio("Target", "Geometry", default=True),
-            sg.Radio("Spectraflect", "Material", default=True, pad=(10, 0)),
+            sg.Text("Serial Number", size=(10, 1)),
+            sg.Input("", size=(20, 1), key="Serial Number"),
+            sg.Text("Client", pad=((0, 0), 0)),
+            sg.DropDown([c for c in CLIENTS], "no client selected", size=(49, 1), key="Client", readonly=True),
         ],
         # 6
-        [
-            sg.Radio("Puck", "Geometry", default=False),
-            sg.Radio("Permaflect", "Material", default=False, pad=(16, 0)),
-            sg.Text("Client", pad=((30, 0), 0)),
-            sg.DropDown([c for c in CLIENTS], "no client selected", size=(52, 1), key="Client", readonly=True),
-        ],
-        # 7
         [sg.Text("")],
-        # 8
+        # 7
         [sg.Text("Stray Light Scan", font="30px")],
-        # 9
+        # 8
         [
             sg.Text("Instrument"),
             sg.DropDown(["A", "B", "C"], "A", size=(5, 1), key="Instrument", readonly=True),
             sg.CalendarButton(
                 "Select Date",
-                target=(9, 3),
+                target=(8, 3),
                 format="%m/%d/%Y",
                 enable_events=True,
             ),
             sg.Input(key="Date", size=(10, 1), enable_events=True, readonly=True),
             sg.DropDown([], "No date selected", size=(45, 1), enable_events=True, key="Stray Light Dropdown", readonly=True),
         ],
-        # 10
+        # 9
         [
-            sg.FolderBrowse(button_text="Manual Browse", target=(10, 0)),
+            sg.FolderBrowse(button_text="Manual Browse", target=(9, 0)),
             sg.Input("Stray Light Path (not selected)", key="Stray Light Path", size=(75, 1), readonly=True),
         ],
-        # 11
+        # 10
         [sg.Text("")],
-        # 12
+        # 11
         [sg.Button("Execute", size=(20, 1), font="30px", pad=(210, 0))],
-        # 13
+        # 12
         [sg.Text("Log", font="30px")],
-        # 14
+        # 13
         [sg.Input(key="Log", size=(91, 5), readonly=True, enable_events=True)],
     ]
 
@@ -744,7 +781,12 @@ def main() -> None:
 
     while True:
         event, values = window.read()
-        if event == "Date":
+
+        if event == "Geometry":
+            window["Size Name"].update("Target Size" if values["Geometry"] == "Target" else "Puck Diameter")
+        elif event == "Material":
+            0
+        elif event == "Date":
             date = DateFromString(values["Date"])
             if date != -1:
                 slps = GetStrayLightPaths(date)
@@ -757,10 +799,11 @@ def main() -> None:
         elif event == "Execute":
             params = Parameters(
                 values["Browse"],
-                "Target" if values[1] else "Puck",
-                "Specraflect" if values[3] else "Permaflect",
+                values["Geometry"],
+                int(values["Size"]),
+                values["Material"],
                 values["Serial Number"],
-                values["Nominal Reflectance"],
+                values["Reflectance"],
                 CLIENTS[values["Client"]] if values["Client"] in CLIENTS else {},
                 values["Instrument"],
                 values["Date"],
@@ -785,7 +828,7 @@ main()
 # Execute(
 #     {
 #         "path": "C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\",
-#         "nominal reflectance": "99%",
+#         "reflectance": "99%",
 #         "serial number": "PF-0921-4398",
 #         "date": DateFromString("1/6/2021"),
 #         "instrument": "B",
