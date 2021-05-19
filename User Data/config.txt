@@ -3,26 +3,25 @@ STRAY_LIGHT_PATH = \\lssvr-fs01\Reflectance Lab\Reflectance Calibrations\stray l
 USB_PATH = E:\
 
 REQUIREMENTS
+    Internal (no req)
+
     Standard 99
         250 0.9-0.995
         300 0.925-0.995
         400-700 0.985-0.995
         750-1600 0.975-0.995
         1650-2350 0.915-0.995
-
         flatness 0.02
-
-    Internal (no req)
 
     In-Cube 900-1600
         1000 0.18-0.21
         1500 0.18-0.21
-        flatness
+        flatness .04
 
     Pentamaster (f) 250-2500
         1000 0.18-0.21
         1500 0.18-0.21
-        flatness
+        flatness .04
 
     Pentamaster 250-2500
         1000 0.18-0.21
@@ -31,7 +30,7 @@ REQUIREMENTS
     Pentamaster (f) 800-1600
         1000 0.18-0.21
         1500 0.18-0.21
-        flatness
+        flatness .04
 
     Pentamaster 800-1600
         1000 0.18-0.21

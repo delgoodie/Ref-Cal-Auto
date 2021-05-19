@@ -47,64 +47,11 @@ CODE NOTES:
 
 """
 
-# region SETUP
-
-# checks for local folder User Data
-if not os_path_exists("User Data\\rr.txt"):
-    raise Exception("User Data\\rr.txt Does Not Exist")
-if not os_path_exists("User Data\\config.txt"):
-    raise Exception("User Data\\config.txt Does Not Exist")
-if not os_path_exists("User Data\\template.docx"):
-    raise Exception("User Data\\template.docx Does Not Exist")
-
-# Reads config data for constant paths
-config = open("User Data\\config.txt").read()
-
-TARGET_DIR = re_search("TARGET_PATH\\s+=\\s+(.+)($|\\n)", config).group(1).strip()
-STRAY_LIGHT_DIR = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)($|\\n)", config).group(1).strip()
-USB_PATH = re_search("USB_PATH\\s*=\\s*(.+)($|\\n)", config).group(1).strip()
-
-del config
-
-# reads client data to generate clients dropdown and populate CLIENTS requirements
-
-cl_int = {}
-if os_path_exists("User Data\\clients.txt"):
-    last = None
-    for l in open("User Data\\clients.txt").readlines():
-        if re_match("\\s+.+", l):
-            reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", l)
-            if reg:
-                cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
-            elif re_match("\\s+flatness", l):
-                cl_int[last]["flatness"] = True
-        else:
-            last = l.strip()
-            cl_int[last] = {}
-    del last, reg, l
-CLIENTS = cl_int
-"""
-CLIENTS dict follows structure:
-{
-    (str)"client name": { (client name is displayed in client dropdown)
-        (int)wavelength: (tuple)((float)lower_limit, (float)upper_limit),
-        ...,
-        (optionally)
-        (str)"flatness": (bool)True (!this value is ignored)
-    },
-    ...
-}
-"""
-del cl_int
-
-# deletes are used to clean up global scope
+# Globals
 
 window = 0
 params = 0
-
-print("Constants & Globals initialized...")
-
-# endregion
+config = {}
 
 # region HELPERS
 
@@ -389,7 +336,7 @@ def debug(func):
             exc_type, exc_obj, exc_tb = sys_exc_info()
             print("\n\n[Exception Raised]")
             print("Send email to:    wdelgiudice@labsphere.com    with the following information:")
-            print("* error message (seen below) \n* all form data (model, sn, date, client, etc)\n* anything different about this specific scan")
+            print("* error message (seen below) \n* all form data (model, sn, date, requirements, etc)\n* anything different about this specific scan")
             print("Error Message:")
             print("TYPE: ", exc_type)
             print("LINE: ", exc_tb.tb_lineno)
@@ -411,6 +358,7 @@ def debug(func):
 
 @debug
 def GetStrayLightPaths(date: Date) -> list[str]:
+    global config
     """
     Returns array of relative paths from STRAY_LIGHT_DIR to stray light folders written at dates that match the @param date
 
@@ -419,7 +367,7 @@ def GetStrayLightPaths(date: Date) -> list[str]:
     @return - List[str] of relative paths from STRAY_LIGHT_DIR
     """
     result = []
-    for dir in os_listdir(STRAY_LIGHT_DIR):
+    for dir in os_listdir(config["stray light directory"]):
         dirDate = DateFromString(dir)
         if dirDate != -1 and dirDate == date:
             result.append(dir)
@@ -466,22 +414,30 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
 
 
 @debug
-def TestClientRequirements(corrected_data):
+def TestRequirements(corrected_data):
     """
-    Tests Corrected Data against Client Requirements from selected Client
+    Tests Corrected Data against Requirements
 
     @return - 0 if data passed tests, str if data failed for error msg
     """
     global params
     error = 0
-    for w in params.requirements:
-        if type(w) is int:
-            if corrected_data[w] < params.requirements[w][0] or corrected_data[w] > params.requirements[w][1]:
-                error = f"Corrected Data did not pass client requirements ({corrected_data[w]} @ {w} did not meet {params.requirements[w][0]} <= reflectance <= {params.requirements[w][1]} @ {w})"
-        elif w == "flatness":
+    for req in params.requirements:
+        if type(req) is int:
+            if corrected_data[req] < params.requirements[req][0] or corrected_data[req] > params.requirements[req][1]:
+                error = f"Corrected Data did not pass requirements ({corrected_data[req]} @ {req} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ {req})"
+                break
+        elif type(req) is tuple:
+            for w in range(req[0], req[1]):
+                if w in corrected_data and (corrected_data[w] < params.requirements[req][0] or corrected_data[w] > params.requirements[req][1]):
+                    error = f"Corrected Data did not pass requirements ({corrected_data[w]} @ {w} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ [{req[0]}, {req[1]}])"
+                    break
+                if error:
+                    break
+        elif req == "flatness":
             dif = (corrected_data[1500] - corrected_data[1000]) * 100
             if dif < 1 or dif > 2:
-                error = f"Corrected Data did not pass client requirements ({dif} did not meet flatness requirements 1 <= ([ref @ 1500] - [ref @ 1000]) * 100 <= 2)"
+                error = f"Corrected Data did not pass requirements ({dif} did not meet flatness requirements 1 <= ([ref @ 1500] - [ref @ 1000]) * 100 <= 2)"
     return error
 
 
@@ -617,13 +573,14 @@ def SavePdf() -> None:
 
 @debug
 def CopyToUsb():
+    global config
     """
     Copies raw data txt file and final cert pdf file to USB path specified in User Data\\config.txt
     """
-    if os_path_exists(USB_PATH):
+    if os_path_exists(config["usb path"]):
         docxName = f"DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx"
-        shutil_copyfile(f"{params.root_path}{docxName}", f"{USB_PATH}{docxName}")
-        shutil_copyfile(f"{params.root_path}{params.serial_number}.pdf", f"{USB_PATH}{params.serial_number}.pdf")
+        shutil_copyfile(f"{params.root_path}{docxName}", f"{config['usb path']}{docxName}")
+        shutil_copyfile(f"{params.root_path}{params.serial_number}.pdf", f"{config['usb path']}{params.serial_number}.pdf")
     return True
 
 
@@ -662,7 +619,7 @@ def Execute() -> bool:
     if not corrected_data:
         return False
 
-    msg = TestClientRequirements(corrected_data)
+    msg = TestRequirements(corrected_data)
     if type(msg) is str:
         window["Log"].update(msg)
         print(msg)
@@ -698,25 +655,60 @@ def AsyncExecute():
     """
     global window
     global params
+    global config
+
     result = Execute()
     if result:
         window["Log"].update("Finished: SUCCESS")
         os_system(f'start "" "{params.root_path}"')
-        if os_path_exists(USB_PATH):
-            os_system(f'start "" "{USB_PATH}"')
+        if os_path_exists(config["usb path"]):
+            os_system(f'start "" "{config["usb path"]}"')
         window.close()
         os__exit(0)
 
 
-def main() -> None:
-    """
-    Main function:
-
-    * Initializes GUI
-    * Handles Events
-    """
+def setup():
     global window
     global params
+    global config
+    # checks for local folder User Data
+    if not os_path_exists("User Data\\rr.txt"):
+        raise Exception("User Data\\rr.txt Does Not Exist")
+    if not os_path_exists("User Data\\config.txt"):
+        raise Exception("User Data\\config.txt Does Not Exist")
+    if not os_path_exists("User Data\\template.docx"):
+        raise Exception("User Data\\template.docx Does Not Exist")
+
+    # Reads config data for constant paths
+    config_file = open("User Data\\config.txt").read()
+
+    config["target directory"] = re_search("TARGET_PATH\\s+=\\s+(.+)($|\\n)", config_file).group(1).strip()
+    config["stray light directory"] = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)($|\\n)", config_file).group(1).strip()
+    config["usb path"] = re_search("USB_PATH\\s*=\\s*(.+)($|\\n)", config_file).group(1).strip()
+
+    # reads requirements data to generate requirements dropdown and populate config['requirements']
+    cl_int = {}
+    last = None
+    req_found = False
+    for line in config_file.split("\n"):
+        if not req_found:
+            if line == "REQUIREMENTS":
+                req_found = True
+        else:
+            if re_search("\\w", line):
+                if re_search("\\d+\\s+\\d+\\.*\\d*\\-\\d+\\.*\\d*", line):
+                    reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", line)
+                    cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
+                elif re_search("\\d+-\\d+\\s+\\d+\\.*\\d*\\-\\d+\\.*\\d*", line):
+                    reg = re_search("(\\d+)-(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", line)
+                    cl_int[last][(int(reg.group(1)), int(reg.group(2)))] = (float(reg.group(3)), float(reg.group(4)))
+                elif re_search("\\s+flatness", line):
+                    cl_int[last]["flatness"] = float(re_search("\\s+flatness\\s+(\\d*\\.*\\d*)", line).group(1))
+                else:
+                    last = line.strip()
+                    cl_int[last] = {}
+
+    config["requirements"] = cl_int
 
     layout = [
         # 0
@@ -742,8 +734,8 @@ def main() -> None:
         [
             sg.Text("Serial Number", size=(10, 1)),
             sg.Input("", size=(20, 1), key="Serial Number"),
-            sg.Text("Client", pad=((0, 0), 0)),
-            sg.DropDown([c for c in CLIENTS], "no client selected", size=(49, 1), key="Client", readonly=True),
+            sg.Text("Requirements", pad=((0, 0), 0)),
+            sg.DropDown([c for c in config["requirements"]], "no req selected", size=(42, 1), key="Requirements", readonly=True),
         ],
         # 6
         [sg.Text("")],
@@ -779,6 +771,18 @@ def main() -> None:
 
     window = sg.Window(title="Ref Cal Auto", layout=layout, margins=(0, 20))
 
+
+def main() -> None:
+    """
+    Main function:
+
+    * Initializes GUI
+    * Handles Events
+    """
+    global window
+    global params
+    global config
+
     while True:
         event, values = window.read()
 
@@ -795,7 +799,7 @@ def main() -> None:
                 else:
                     window["Stray Light Dropdown"].update(values=slps)
         elif event == "Stray Light Dropdown":
-            window["Stray Light Path"].update(f"{STRAY_LIGHT_DIR}{values['Stray Light Dropdown']}")
+            window["Stray Light Path"].update(f"{config['stray light directory']}{values['Stray Light Dropdown']}")
         elif event == "Execute":
             params = Parameters(
                 values["Browse"],
@@ -804,7 +808,7 @@ def main() -> None:
                 values["Material"],
                 values["Serial Number"],
                 values["Reflectance"],
-                CLIENTS[values["Client"]] if values["Client"] in CLIENTS else {},
+                config["Requirements"][values["Requirements"]] if values["Requirements"] in config["Requirements"] else {},
                 values["Instrument"],
                 values["Date"],
                 values["Stray Light Path"],
@@ -822,6 +826,7 @@ def main() -> None:
 
 
 # !ENTRY POINT
+setup()
 main()
 
 # !TESTING
