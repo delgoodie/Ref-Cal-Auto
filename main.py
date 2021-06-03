@@ -1,3 +1,4 @@
+from calendar import c
 from os.path import exists as os_path_exists
 from os import remove as os_remove
 from os import listdir as os_listdir
@@ -313,6 +314,43 @@ def LeftPad(string, length):
     return string
 
 
+def PreTabCount(string: str) -> int:
+    i = 0
+    count = 0
+    while string[i] in [" ", "\t"]:
+        if string[i : i + 4] == "    " or string[i : i + 4] == "   \t":
+            i += 4
+        elif string[i : i + 3] == "  \t":
+            i + 3
+        elif string[i : i + 2] == " \t":
+            i += 2
+        elif string[i] == "\t":
+            i += 1
+        else:
+            raise Exception("main.PreTabCount(string: str)->int Invalid Tabs and Spaces")
+        count += 1
+    return count
+
+
+def ParseTabTree(lines: list[str]) -> dict:
+    root = {}
+    i = 0
+    while i < len(lines):
+        if lines[i] == "\n" or lines[i][0] == "#":
+            i += 1
+        elif "=" in lines[i]:
+            root[lines[i].split("=")[0].strip()] = lines[i].split("=")[1].strip()
+            i += 1
+        else:
+            num_tabs = PreTabCount(lines[i])
+            j = i + 1
+            while j < len(lines) and (PreTabCount(lines[j]) > num_tabs or lines[j] == "\n"):
+                j += 1
+            root[lines[i].strip()] = ParseTabTree(lines[i + 1 : j])
+            i = j
+    return root
+
+
 def debug(func):
     """
     Debug Wrapper to catch errors, display timestamp, and log status
@@ -336,7 +374,9 @@ def debug(func):
             exc_type, exc_obj, exc_tb = sys_exc_info()
             print("\n\n[Exception Raised]")
             print("Send email to:    wdelgiudice@labsphere.com    with the following information:")
-            print("* error message (seen below) \n* all form data (model, sn, date, requirements, etc)\n* anything different about this specific scan")
+            print(
+                "* error message (seen below) \n* all form data (model, sn, date, requirements, etc)\n* anything different about this specific scan"
+            )
             print("Error Message:")
             print("TYPE: ", exc_type)
             print("LINE: ", exc_tb.tb_lineno)
@@ -421,24 +461,50 @@ def TestRequirements(corrected_data):
     @return - 0 if data passed tests, str if data failed for error msg
     """
     global params
-    error = 0
+
+    flat_arr = [corrected_data[v] for v in range(250, 800, 50)]
+    flatness = max(flat_arr) - min(flat_arr)
+
+    # Test Internal Requirements
+
+    if params.material == "Spectralon":
+        if params.reflectance == 99:
+            if params.geometry == "Puck":
+                if corrected_data[250] < 0.9 or corrected_data[250] > 0.995:
+                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[250]} @ 250nm did not meet .9 < R < .995 @ 250nm)"
+                if corrected_data[300] < 0.925 or corrected_data[300] > 0.995:
+                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[300]} @ 300nm did not meet .925 < R < .995 @ 300nm)"
+                if corrected_data[350] < 0.975 or corrected_data[350] > 0.995:
+                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[350]} @ 350nm did not meet .975 < R < .995 @ 350nm)"
+                for w in range(400, 700, 50):
+                    if corrected_data[w] < 0.985 or corrected_data[w] > 0.995:
+                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .985 < R < .995 on (400nm, 700nm))"
+                for w in range(750, 1600, 50):
+                    if corrected_data[w] < 0.975 or corrected_data[w] > 0.995:
+                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .975 < R < .995 on (750nm, 1600nm))"
+                for w in range(1650, 2350, 50):
+                    if corrected_data[w] < 0.915 or corrected_data[w] > 0.995:
+                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .915 < R < .995 on (1650nm, 2350nm))"
+            elif params.geometry == "Target":
+                0
+            if flatness > 0.02:
+                return f"Corrected Data did not pass requirements (internal) (flatness: {flatness} was not < .02)"
+    else:
+        0
+
+    # Test Additional Requirements
+
     for req in params.requirements:
         if type(req) is int:
             if corrected_data[req] < params.requirements[req][0] or corrected_data[req] > params.requirements[req][1]:
-                error = f"Corrected Data did not pass requirements ({corrected_data[req]} @ {req} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ {req})"
-                break
+                return f"Corrected Data did not pass requirements (additional) ({corrected_data[req]} @ {req} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ {req})"
         elif type(req) is tuple:
             for w in range(req[0], req[1]):
                 if w in corrected_data and (corrected_data[w] < params.requirements[req][0] or corrected_data[w] > params.requirements[req][1]):
-                    error = f"Corrected Data did not pass requirements ({corrected_data[w]} @ {w} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ [{req[0]}, {req[1]}])"
-                    break
-                if error:
-                    break
+                    return f"Corrected Data did not pass requirements (additional) ({corrected_data[w]} @ {w} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ [{req[0]}, {req[1]}])"
         elif req == "flatness":
-            dif = (corrected_data[1500] - corrected_data[1000]) * 100
-            if dif < 1 or dif > 2:
-                error = f"Corrected Data did not pass requirements ({dif} did not meet flatness requirements 1 <= ([ref @ 1500] - [ref @ 1000]) * 100 <= 2)"
-    return error
+            if flatness > params.requirements[req]:
+                return f"Corrected Data did not pass requirements (additional) (flatness: {flatness} was not < {params.requirements[req]})"
 
 
 @debug
@@ -680,35 +746,37 @@ def setup():
         raise Exception("User Data\\template.docx Does Not Exist")
 
     # Reads config data for constant paths
-    config_file = open("User Data\\config.txt").read()
 
-    config["target directory"] = re_search("TARGET_PATH\\s+=\\s+(.+)($|\\n)", config_file).group(1).strip()
-    config["stray light directory"] = re_search("STRAY_LIGHT_PATH\\s+=\\s+(.+)($|\\n)", config_file).group(1).strip()
-    config["usb path"] = re_search("USB_PATH\\s*=\\s*(.+)($|\\n)", config_file).group(1).strip()
+    parsed_config = ParseTabTree(open("User Data\\config.txt").readlines())
 
-    # reads requirements data to generate requirements dropdown and populate config['requirements']
-    cl_int = {}
-    last = None
-    req_found = False
-    for line in config_file.split("\n"):
-        if not req_found:
-            if line == "REQUIREMENTS":
-                req_found = True
-        else:
-            if re_search("\\w", line):
-                if re_search("\\d+\\s+\\d+\\.*\\d*\\-\\d+\\.*\\d*", line):
-                    reg = re_search("(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", line)
-                    cl_int[last][int(reg.group(1))] = (float(reg.group(2)), float(reg.group(3)))
-                elif re_search("\\d+-\\d+\\s+\\d+\\.*\\d*\\-\\d+\\.*\\d*", line):
-                    reg = re_search("(\\d+)-(\\d+)\\s+(\\d+\\.*\\d*)\\-(\\d+\\.*\\d*)", line)
-                    cl_int[last][(int(reg.group(1)), int(reg.group(2)))] = (float(reg.group(3)), float(reg.group(4)))
-                elif re_search("\\s+flatness", line):
-                    cl_int[last]["flatness"] = float(re_search("\\s+flatness\\s+(\\d*\\.*\\d*)", line).group(1))
-                else:
-                    last = line.strip()
-                    cl_int[last] = {}
+    config["target directory"] = parsed_config["REF_CAL_PATH"]
+    config["stray light directory"] = parsed_config["STRAY_LIGHT_PATH"]
+    config["usb path"] = parsed_config["USB_PATH"]
 
-    config["requirements"] = cl_int
+    # REQUIREMENTS
+    int_req = {}
+    for req in parsed_config["REQUIREMENTS"]:
+        int_req[req] = {}
+        for spec in parsed_config["REQUIREMENTS"][req]:
+            if re_match("^\\d+$", spec):
+                key = int(spec)
+            elif re_match("\\d+\\-\\d+", spec):
+                key = (int((spec.split("-")[0].strip())), int((spec.split("-")[1].strip())))
+            else:
+                key = spec
+
+            raw = parsed_config["REQUIREMENTS"][req][spec]
+            if re_match("\\d*\\.\\d+\\-\\d*\\.\\d+", raw):
+                val = (float((raw.split("-")[0].strip())), float((raw.split("-")[1].strip())))
+            elif re_match("\\d*\\.\\d+", raw):
+                val = float(raw)
+            else:
+                val = raw
+                print(raw)
+
+            int_req[req][key] = val
+
+    config["requirements"] = int_req
 
     layout = [
         # 0
@@ -722,11 +790,11 @@ def setup():
         # 4
         [
             sg.Text("Geometry"),
-            sg.DropDown(["Target", "Puck"], "Target", key="Geometry", size=(9, 1), readonly=True, enable_events=True),
+            sg.DropDown(["Target", "Puck"], "Select", key="Geometry", size=(9, 1), readonly=True, enable_events=True),
             sg.Text("Material"),
-            sg.DropDown(["Spectraflect", "Permaflect"], "Spectraflect", key="Material", size=(13, 1), readonly=True, enable_events=True),
-            sg.Text("Target Length", size=(11, 0), key="Size Name"),
-            sg.Input("", size=(6, 1), key="Size"),
+            sg.DropDown(["Spectralon", "Permaflect"], "Select", key="Material", size=(13, 1), readonly=True, enable_events=True),
+            sg.Text("Target Size", size=(11, 0), key="Size Name", pad=(0, 0)),
+            sg.DropDown(["020", "050", "100", "120", "180", "240"], "", key="Size", size=(6, 1), pad=(0, 0), readonly=False),
             sg.Text("Reflectance"),
             sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
         ],
@@ -735,7 +803,7 @@ def setup():
             sg.Text("Serial Number", size=(10, 1)),
             sg.Input("", size=(20, 1), key="Serial Number"),
             sg.Text("Requirements", pad=((0, 0), 0)),
-            sg.DropDown([c for c in config["requirements"]], "no req selected", size=(42, 1), key="Requirements", readonly=True),
+            sg.DropDown([c for c in config["requirements"]], "No Additional Requirements", size=(42, 1), key="Requirements", readonly=True),
         ],
         # 6
         [sg.Text("")],
@@ -752,7 +820,7 @@ def setup():
                 enable_events=True,
             ),
             sg.Input(key="Date", size=(10, 1), enable_events=True, readonly=True),
-            sg.DropDown([], "No date selected", size=(45, 1), enable_events=True, key="Stray Light Dropdown", readonly=True),
+            sg.DropDown([], "Select Scan", size=(45, 1), enable_events=True, key="Stray Light Dropdown", readonly=True),
         ],
         # 9
         [
@@ -787,7 +855,10 @@ def main() -> None:
         event, values = window.read()
 
         if event == "Geometry":
-            window["Size Name"].update("Target Size" if values["Geometry"] == "Target" else "Puck Diameter")
+            isTarget = values["Geometry"] == "Target"
+            window["Size Name"].update("Target Size" if isTarget else "Puck Diameter")
+            sizeDropdown = ["020", "050", "100", "120", "180", "240"] if isTarget else ["010", "020"]
+            window["Size"].update(values=sizeDropdown)
         elif event == "Material":
             0
         elif event == "Date":
@@ -808,7 +879,7 @@ def main() -> None:
                 values["Material"],
                 values["Serial Number"],
                 values["Reflectance"],
-                config["Requirements"][values["Requirements"]] if values["Requirements"] in config["Requirements"] else {},
+                config["requirements"][values["Requirements"]] if values["Requirements"] in config["requirements"] else {},
                 values["Instrument"],
                 values["Date"],
                 values["Stray Light Path"],
