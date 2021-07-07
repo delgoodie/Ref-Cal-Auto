@@ -1,8 +1,10 @@
-from calendar import c
+# !/usr/bin/python
+
 from os.path import exists as os_path_exists
 from os import remove as os_remove
 from os import listdir as os_listdir
 from os import system as os_system
+from os import rename as os_rename
 from os import _exit as os__exit
 from sys import exc_info as sys_exc_info
 from re import search as re_search
@@ -16,6 +18,7 @@ from docx2pdf import convert as docx2pdf_convert
 from math import ceil, floor, log10
 from threading import Timer
 from time import perf_counter
+from datetime import date
 
 """
 OVERVIEW:
@@ -25,6 +28,7 @@ Once a scan is taken, the scanning device creates a folder with data from the sc
 Then five steps are required of the user, which are automated in this script:
 
 * Correcting the raw data (achieved by copying data from /Equation1.Sample.Cycle1.Equation1.csv to \GrayReflectCalA.xls which functional corrects data)
+* Testing corrected data against both internal and customer requirements and passing/failing accordingly
 * Creating a txt file which holds corrected data (must be named (last four of serial number)-(model name))
 * Creating a certificate word doc and transfering metadata (model, serial number, date, ...), corrected data (from \GrayReflectCalA.xls), and a graph of the corrected data (from \GrayReflectCalA.xls)
 * Creating a PDF cert of the word doc
@@ -34,18 +38,19 @@ Also note that an important part of the automation process is locating the Stray
 
 CODE NOTES:
 
-* When compiling this script, copy the /User Data/ folder into the same directory as main.exe
+* When compiling this script, copy the /User Data/ folder into the same directory as main.exe (in dist/main/)
 
-* methods are imported and renamed with underscores so as to keep naming clear and concise will still importing the mininmum number of methods
+* methods are imported and renamed with underscores so as to keep naming clear and concise while still importing the mininmum number of methods / dependencies
 
-* Execute function is seperated into many parts so that each part can be wrapped with @debug.
+* Execute function is seperated into many parts so that each part can be wrapped with @debug
+
+* The execution occurs async in another thread so as to live-update the console and gui with progress
 
 * the debug function is a wrapper which logs the time taken by a function, handels errors, and logs status
 
-* window and params were made global since debug and other functions require them (yeah, it had to be)
+* window, params, and config were made global since debug and other functions require them (yeah, it had to be)
 
 * this script depends on a relative folder /User Data which must contain rr.txt, clients.txt, config.txt, and template.docx
-
 """
 
 # Globals
@@ -53,6 +58,119 @@ CODE NOTES:
 window = 0
 params = 0
 config = {}
+internal_reqs = [
+    # region Table II
+    {
+        'material': 'Spectralon',
+        'reflectance': 2,
+        'geometry': 'Puck',
+        'tolerance': {600: (0, 2)},
+        'flatness': 4
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': 2,
+        'geometry': 'Target',
+        'tolerance': {600: 2},
+        'flatness': 4
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': 5,
+        'geometry': 'Puck',
+        'tolerance': {600: 1},
+        'flatness': 4
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': 5,
+        'geometry': 'Target',
+        'tolerance': {600: 2},
+        'flatness': 4
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': (6, 19),
+        'geometry': 'Puck',
+        'tolerance': {600: 1},
+        'flatness': 5
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': (6, 19),
+        'geometry': 'Target',
+        'tolerance': {600: 3},
+        'flatness': 5
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': (20, 95),
+        'geometry': 'Puck',
+        'tolerance': {600: 2},
+        'flatness': 5
+    },
+    {
+        'material': 'Spectralon',
+        'reflectance': (20, 95),
+        'geometry': 'Target',
+        'tolerance': {600: 5},
+        'flatness': 5
+    },
+    #endregion
+    # region Table III
+    {
+        'material': 'Spectralon',
+        'reflectance': 99,
+        'geometry': 'Target',
+        'range': {
+            250: (.9, .995),
+            300: (.925, .995),
+            350: (.975, .995),
+            (400, 700, 50): (.985, .995),
+            (750, 1600, 50): (.975, .995),
+            (1650, 2350, 50): (.915, .995)
+        }
+    },
+    # endregion
+    # region Permaflect Table
+    {
+        'material': 'Permaflect',
+        'reflectance': 5,
+        'geometry': 'Target',
+        'tolerance': { 905: 1.25 }
+    },
+    {
+        'material': 'Permaflect',
+        'reflectance': 10,
+        'geometry': 'Target',
+        'tolerance': { 905: 1.25 }
+    },
+    {
+        'material': 'Permaflect',
+        'reflectance': 18,
+        'geometry': 'Target',
+        'tolerance': { 905: 1.25 }
+    },
+    {
+        'material': 'Permaflect',
+        'reflectance': 50,
+        'geometry': 'Target',
+        'tolerance': { 905: 1.75 }
+    },
+    {
+        'material': 'Permaflect',
+        'reflectance': 80,
+        'geometry': 'Target',
+        'tolerance': { 905: 1.25 }
+    },
+    {
+        'material': 'Permaflect',
+        'reflectance': 94,
+        'geometry': 'Target',
+        'tolerance': { 905: (0, 3) }
+    }
+    # endregion
+]
 
 # region HELPERS
 
@@ -78,7 +196,7 @@ class Parameters:
         self,
         root_path: str = None,
         geometry: str = None,
-        size: int = None,
+        size: str = None,
         material: str = None,
         serial_number: str = None,
         reflectance: int = None,
@@ -114,9 +232,9 @@ class Parameters:
 
     def isValid(self):
         if self.root_path and type(self.root_path) is str and os_path_exists(self.root_path):
-            if self.material and type(self.material) is str and self.material in ["Spectraflect", "Permaflect"]:
+            if self.material and type(self.material) is str and self.material in ["Spectralon", "Permaflect"]:
                 if self.geometry and type(self.geometry) is str and self.geometry in ["Target", "Puck"]:
-                    if self.size and type(self.size) is int:
+                    if self.size and type(self.size) is str:
                         if self.serial_number and type(self.serial_number) is str and len(self.serial_number) > 4:
                             if self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100:
                                 if True or self.requirements and type(self.requirements) is dict:
@@ -144,7 +262,6 @@ class Parameters:
                 return "Invalid Material"
         else:
             return "Invalid Root Path"
-
 
 class CSV:
     def __init__(self, _path: str):
@@ -237,7 +354,6 @@ class CSV:
             file.write(string)
             file.close()
 
-
 class DOCX:
     def __init__(self, _path):
         self.path = _path
@@ -278,7 +394,7 @@ class DOCX:
             self.doc.save(self.path)
 
 
-def DateFromString(string: str):
+def DateFromString(string: str) -> Date:
     """
     Retrieves date from string containing a date in the following formats:
 
@@ -305,7 +421,7 @@ def DateFromString(string: str):
     return Date(month, day, year)
 
 
-def LeftPad(string, length):
+def LeftPad(string: str, length: int) -> str:
     """
     Left Pad a string with ' ' (spaces) so that it takes on the length of @param length
     """
@@ -415,7 +531,7 @@ def GetStrayLightPaths(date: Date) -> list[str]:
 
 
 @debug
-def Get_rr():
+def Get_rr() -> list[float]:
     """
     Reads Rr data from \\User Data\\rr.txt
     """
@@ -438,8 +554,9 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
     i = 2
     while len(strayLight.Read(("A", i))) > 0:
         s_l = float(strayLight.Read(("B", i)))
-        s_l = abs(s_l)
-        s_l = min(s_l, 100)
+        if s_l < 0 or s_l > 1:
+            print(f'[WARNING] Check Stray Light Scan for data outside of range 0 - 1 (around {i + 245}nm)')
+            s_l = max(0, min(1, s_l))
         Mh[int(float(strayLight.Read(("A", i))))] = s_l
         i += 1
 
@@ -448,49 +565,62 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
         if w >= 250 and w <= 2500:
             c_d[w] = round((Ms[w] * 0.01 - Mh[w] * 0.01) * (1 / (1 - Mh[w] * 0.01)) * Rr[w - 250], 4)
             if c_d[w] < 0:
-                print(f"negative c_d: {c_d[w]} @ {w}")
+                raise Exception(f"negative corrected data: {c_d[w]} @ {w}")
 
     return c_d
 
 
 @debug
-def TestRequirements(corrected_data):
+def TestRequirements(corrected_data: dict) -> str:
     """
     Tests Corrected Data against Requirements
 
     @return - 0 if data passed tests, str if data failed for error msg
     """
-    global params
-
-    flat_arr = [corrected_data[v] for v in range(250, 800, 50)]
-    flatness = max(flat_arr) - min(flat_arr)
+    global params, internal_reqs
 
     # Test Internal Requirements
 
-    if params.material == "Spectralon":
-        if params.reflectance == 99:
-            if params.geometry == "Puck":
-                if corrected_data[250] < 0.9 or corrected_data[250] > 0.995:
-                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[250]} @ 250nm did not meet .9 < R < .995 @ 250nm)"
-                if corrected_data[300] < 0.925 or corrected_data[300] > 0.995:
-                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[300]} @ 300nm did not meet .925 < R < .995 @ 300nm)"
-                if corrected_data[350] < 0.975 or corrected_data[350] > 0.995:
-                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[350]} @ 350nm did not meet .975 < R < .995 @ 350nm)"
-                for w in range(400, 700, 50):
-                    if corrected_data[w] < 0.985 or corrected_data[w] > 0.995:
-                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .985 < R < .995 on (400nm, 700nm))"
-                for w in range(750, 1600, 50):
-                    if corrected_data[w] < 0.975 or corrected_data[w] > 0.995:
-                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .975 < R < .995 on (750nm, 1600nm))"
-                for w in range(1650, 2350, 50):
-                    if corrected_data[w] < 0.915 or corrected_data[w] > 0.995:
-                        return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet .915 < R < .995 on (1650nm, 2350nm))"
-            elif params.geometry == "Target":
-                0
-            if flatness > 0.02:
-                return f"Corrected Data did not pass requirements (internal) (flatness: {flatness} was not < .02)"
-    else:
-        0
+    for i_r in internal_reqs:
+        if params.material == i_r['material'] and params.reflectance == i_r['reflectance'] and params.geometry == i_r['geometry']:
+            if 'range' in i_r:
+                for r in i_r['range']:
+                    if type(r) is int:
+                        if corrected_data[r] < i_r['range'][r][0] or corrected_data[r] > i_r['range'][r][1]:
+                            return f"Corrected Data did not pass requirements (internal) ({corrected_data[r]} @ {r}nm did not meet {i_r['range'][r][0]} < R < {i_r['range'][r][1]} @ {r}nm)"
+                    else:
+                        for w in range(r[0], r[1] + r[2], r[2]):
+                            if corrected_data[w] < i_r['range'][r][0] or corrected_data[w] > i_r['range'][r][1]:
+                                return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet {i_r['range'][r][0]} < R < {i_r['range'][r][1]} on [{r[0]}nm - {r[1]}nm))"
+            if 'tolerance' in i_r:
+                target = 0
+                if params.material == "Spectralon":
+                    target = params.reflectance
+                else:
+                    target = sum(corrected_data[v] for v in corrected_data) / len(corrected_data) * 100
+                for t in i_r['tolerance']:
+                    r = i_r['tolerance'][t]
+                    if type(t) is int:
+                        if type(r) is int or type(r) is float:
+                            if corrected_data[t] < (target - r) * .01 or corrected_data[t] > (target + r) * .01:
+                                return f"Corrected Data did not pass requirements (internal) ({corrected_data[t]} @ {t}nm did not meet R within +/-{r}% of {target} @ {t}nm)"
+                        else:
+                            if corrected_data[t] < (target - r[0]) *.01 or corrected_data[t] > (target + r[1]) * .01:
+                                return f"Corrected Data did not pass requirements (internal) ({corrected_data[t]} @ {t}nm did not meet R within -{r[0]}% to +{r[1]}% of {target} @ {t}nm)"
+                            
+                    else:
+                        for w in range(t[0], t[1] + t[2], t[2]):
+                            if type(r) is int or type(r) is float:
+                                if corrected_data[w] < (target - r) * .01 or corrected_data[t] > (target + r) * .01:
+                                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet R within +/-{r}% of {target} on [{r[0]}nm - {r[1]}nm))"
+                            else:
+                                if corrected_data[t] < (target - r[0]) * .01 or corrected_data[t] > (target + r[1]) * .01:
+                                    return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet R within -{r[0]}% to +{r[1]}% of {target} on [{r[0]}nm - {r[1]}nm))"
+            if 'flatness' in i_r:
+                flat_arr = [corrected_data[v] for v in range(350, 760)]
+                flatness = max(flat_arr) - min(flat_arr)
+                if flatness > i_r['flatness']:
+                    return f"Corrected Data did not pass requirements (internal) (flatness: {flatness} was not < .02)"
 
     # Test Additional Requirements
 
@@ -503,26 +633,59 @@ def TestRequirements(corrected_data):
                 if w in corrected_data and (corrected_data[w] < params.requirements[req][0] or corrected_data[w] > params.requirements[req][1]):
                     return f"Corrected Data did not pass requirements (additional) ({corrected_data[w]} @ {w} did not meet {params.requirements[req][0]} <= reflectance <= {params.requirements[req][1]} @ [{req[0]}, {req[1]}])"
         elif req == "flatness":
+            flat_arr = [corrected_data[v] for v in range(350, 760)]
+            flatness = max(flat_arr) - min(flat_arr)
             if flatness > params.requirements[req]:
                 return f"Corrected Data did not pass requirements (additional) (flatness: {flatness} was not < {params.requirements[req]})"
 
 
 @debug
-def SaveTextFile(corrected_data):
+def RenameRootFolder(success: bool) -> None:
+    """
+    Renames root folder, either sn if success or sn-FAIL
+    
+     removing last four sn digits and appending FAIL
+
+    If a FAIL folder already exists, append a number starting at 2 and increasing by one:
+
+    -FAIL-2, -FAIL-3, -FAIL-{n}
+    """
+    global params
+
+    path = params.root_path[0 : params.root_path.rindex('/') + 1] + params.serial_number
+    if not success:
+        if not os_path_exists(f"{path[0:-5]}FAIL"):
+            path =  f"{path[0:-5]}FAIL"
+        else:
+            i = 2
+            while os_path_exists(f"{path[0:-5]}FAIL-{i}"):
+                i += 1
+            path = f"{params.root_path[0:-5]}FAIL-{i}"
+
+    os_rename(params.root_path, path)
+    params.root_path = path + '/'
+
+
+@debug
+def SaveStrayLight(src_path):
+    global params
+    shutil_copyfile(src_path, f'{params.root_path}/StrayLightScan.csv')
+
+
+@debug
+def SaveTextFile(corrected_data: dict) -> None:
     """
     Saves corrected data as text file under (last four of sn)-(model name).txt
     """
     # print(f"Generating {params['serial number'][-4:len(params['serial number'])]}-{params['model']}.txt file    ")
     txt = open(f"{params.root_path}{params.serial_number[-4:len(params.serial_number)]}-{params.model}.txt", "w")
-    stringdata = [f"{w}\t{corrected_data[w]}\n" for w in corrected_data]
+    stringdata = [f"{w}\t{corrected_data[w]}\n" for w in range(250, 2501)]
     stringdata.insert(0, f"{params.serial_number}\nThis data is for reference only\n")
     txt.write("".join(stringdata))
-    del stringdata
-    return True
 
 
 @debug
-def WriteWordMeta(doc):
+def WriteWordMeta(doc: DOCX) -> None:
     """
     Writes metadata to word docx template
 
@@ -532,16 +695,15 @@ def WriteWordMeta(doc):
     * instrument (A, B, C)
     """
     doc.ReplaceText("sn", params.serial_number)
-    doc.ReplaceText("DATE", str(params.date))
+    doc.ReplaceText("DATE", date.today().strftime("%d/%m/%Y"))
     doc.ReplaceText("model", params.model)
     doc.ReplaceText("isA", "X" if params.instrument == "A" else "")
     doc.ReplaceText("isB", "X" if params.instrument == "B" else "")
     doc.ReplaceText("isC", "X" if params.instrument == "C" else "")
-    return True
 
 
 @debug
-def WriteWordData(doc: DOCX, corrected_data: dict):
+def WriteWordData(doc: DOCX, corrected_data: dict) -> None:
     """
     Writes corrected reflectance data to word docx cert in in table
 
@@ -552,12 +714,15 @@ def WriteWordData(doc: DOCX, corrected_data: dict):
     offset = -1
     uncertainty_ref = 0
     UNCERTAINTY_COLS = 9
+
+    # Find nearest reflectance in Uncertainty Table
     for i in range(1, UNCERTAINTY_COLS):
         col_ref = int(re_search("(\\d+)%", uncertainty_table[i].text).group(1))
         if params.reflectance == col_ref or not uncertainty_ref or abs(params.reflectance - col_ref) < abs(params.reflectance - uncertainty_ref):
             uncertainty_ref = col_ref
             offset = i
 
+    # Find sigfigs for each wavelength from Uncertainty Table
     for i in range(UNCERTAINTY_COLS + offset, len(uncertainty_table), UNCERTAINTY_COLS):
         w = int(uncertainty_table[i - offset].text)
         u = 0
@@ -571,6 +736,7 @@ def WriteWordData(doc: DOCX, corrected_data: dict):
                 u += 1
         uncertainty[w] = u
 
+    # Apply sigfigs to corrected_data and write result to Docx
     for w in range(250, 2510, 50):
         if w in corrected_data:
             v = corrected_data[w]
@@ -584,11 +750,10 @@ def WriteWordData(doc: DOCX, corrected_data: dict):
                 doc.ReplaceText(f"w{str(int(w / 10))}", v)
             else:
                 print(f"No corrected_data at wavelength: {w}")
-    return True
 
 
 @debug
-def WriteWordGraph(doc, corrected_data):
+def WriteWordGraph(doc: DOCX, corrected_data: dict) -> None:
     """
     Writes graph to word docx cert
 
@@ -597,29 +762,33 @@ def WriteWordGraph(doc, corrected_data):
     * Writes image to docx cert
     * Deletes temp.png
     """
-    plt_x = [w for w in corrected_data]
-    plt_y = [corrected_data[w] for w in corrected_data]
+    plt_x = [w for w in range(250, 2500, 5)]
+    plt_y = []
+    for w in plt_x:
+        avg = 0
+        for i in range(w, w + 5):
+            avg += corrected_data[i]
+        avg /= 5
+        plt_y.append(avg)
     plt.plot(plt_x, plt_y, color="black")
     # plt.title("Graph I: 8°/Hemispherical Spectral Reflectance")
     plt.ylabel("Reflectance Factor")
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
-    plt.axis([250, 2500, 0, ceil(max(plt_y) * 4) * 0.25])
+    # plt.axis([250, 2500, 0, ceil(max(plt_y) * 10) * 0.1])
     plt.savefig("temp.png")
     doc.ReplacePicture("graph", "temp.png", (7, 5.5))
     os_remove("temp.png")
-    return True
 
 
 @debug
-def SaveWord(doc):
+def SaveWord(doc: DOCX) -> None:
     """
     Saves word doc cert
 
     This function exists simply to wrap DOCX.Save() method so the debug wrapper can be used
     """
     doc.Save(f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx")
-    return True
 
 
 @debug
@@ -634,11 +803,10 @@ def SavePdf() -> None:
         f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx",
         f"{params.root_path}{params.serial_number}.pdf",
     )
-    return True
 
 
 @debug
-def CopyToUsb():
+def CopyToUsb() -> None:
     global config
     """
     Copies raw data txt file and final cert pdf file to USB path specified in User Data\\config.txt
@@ -647,10 +815,11 @@ def CopyToUsb():
         docxName = f"DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx"
         shutil_copyfile(f"{params.root_path}{docxName}", f"{config['usb path']}{docxName}")
         shutil_copyfile(f"{params.root_path}{params.serial_number}.pdf", f"{config['usb path']}{params.serial_number}.pdf")
-    return True
 
 
 # endregion
+
+# region EXECUTION
 
 
 def Execute() -> bool:
@@ -686,36 +855,34 @@ def Execute() -> bool:
         return False
 
     msg = TestRequirements(corrected_data)
-    if type(msg) is str:
+    if msg:
+        RenameRootFolder(False)
         window["Log"].update(msg)
         print(msg)
         return False
+    else:
+        RenameRootFolder(True)
 
-    if not SaveTextFile(corrected_data):
-        return False
+    SaveStrayLight(strayLight.path)
 
-    if not WriteWordMeta(doc):
-        return False
+    SaveTextFile(corrected_data)
 
-    if not WriteWordData(doc, corrected_data):
-        return False
+    WriteWordMeta(doc)
 
-    if not WriteWordGraph(doc, corrected_data):
-        return False
+    WriteWordData(doc, corrected_data)
 
-    if not SaveWord(doc):
-        return False
+    WriteWordGraph(doc, corrected_data)
 
-    if not SavePdf():
-        return False
+    SaveWord(doc)
 
-    if not CopyToUsb():
-        return False
+    SavePdf()
+
+    CopyToUsb()
 
     return True
 
 
-def AsyncExecute():
+def AsyncExecute() -> None:
     """
     This function exists so the Execute Function can occur on a seperate thread, while the GUI continues to receive updates
     """
@@ -733,7 +900,71 @@ def AsyncExecute():
         os__exit(0)
 
 
-def setup():
+# endregion
+
+# region EVENTS
+
+
+def GeometryEvent(values):
+    global window
+
+    isTarget = values["Geometry"] == "Target"
+    window["Size Name"].update("Target Size" if isTarget else "Puck Diameter")
+    sizeDropdown = ["020", "050", "100", "120", "180", "240"] if isTarget else ["010", "020"]
+    window["Size"].update(values=sizeDropdown)
+
+
+def DateEvent(values):
+    global window
+
+    date = DateFromString(values["Date"])
+    if date != -1:
+        slps = GetStrayLightPaths(date)
+        if len(slps) == 0:
+            window["Stray Light Dropdown"].update(values=[])
+        else:
+            window["Stray Light Dropdown"].update(values=slps)
+
+
+def StrayLightDropdownEvent(values):
+    global window
+
+    window["Stray Light Path"].update(f"{config['stray light directory']}{values['Stray Light Dropdown']}")
+    # Suggest Instrument from Stray Light Path
+    regex = re_search("[- ](A|B|C)( |-|$)", values["Stray Light Dropdown"])
+    if regex:
+        window["Instrument"].update(regex.groups(1)[0])
+
+
+def ExecuteEvent(values):
+    global window
+    global params
+
+    params = Parameters(
+        values["Browse"],
+        values["Geometry"],
+        values["Size"],
+        values["Material"],
+        values["Serial Number"],
+        values["Reflectance"],
+        config["requirements"][values["Requirements"]] if values["Requirements"] in config["requirements"] else {},
+        values["Instrument"],
+        values["Date"],
+        values["Stray Light Path"],
+    )
+    error = params.isValid()
+    if not type(error) is str:
+        window["Log"].update("Executing...")
+        Timer(1.0, AsyncExecute).start()
+    else:
+        window["Log"].update(error)
+        print("Execution Conditions not met:     ", error, "\n")
+
+
+# endregion
+
+
+def setup() -> None:
     global window
     global params
     global config
@@ -796,7 +1027,7 @@ def setup():
             sg.Text("Target Size", size=(11, 0), key="Size Name", pad=(0, 0)),
             sg.DropDown(["020", "050", "100", "120", "180", "240"], "", key="Size", size=(6, 1), pad=(0, 0), readonly=False),
             sg.Text("Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
+            sg.DropDown(["2%", "5%", "10%", "18%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
         ],
         # 5
         [
@@ -824,7 +1055,7 @@ def setup():
         ],
         # 9
         [
-            sg.FolderBrowse(button_text="Manual Browse", target=(9, 0)),
+            sg.FolderBrowse(button_text="Manual Browse", target=(9, 1)),
             sg.Input("Stray Light Path (not selected)", key="Stray Light Path", size=(75, 1), readonly=True),
         ],
         # 10
@@ -855,42 +1086,15 @@ def main() -> None:
         event, values = window.read()
 
         if event == "Geometry":
-            isTarget = values["Geometry"] == "Target"
-            window["Size Name"].update("Target Size" if isTarget else "Puck Diameter")
-            sizeDropdown = ["020", "050", "100", "120", "180", "240"] if isTarget else ["010", "020"]
-            window["Size"].update(values=sizeDropdown)
+            GeometryEvent(values)
         elif event == "Material":
             0
         elif event == "Date":
-            date = DateFromString(values["Date"])
-            if date != -1:
-                slps = GetStrayLightPaths(date)
-                if len(slps) == 0:
-                    window["Stray Light Dropdown"].update(values=[])
-                else:
-                    window["Stray Light Dropdown"].update(values=slps)
+            DateEvent(values)
         elif event == "Stray Light Dropdown":
-            window["Stray Light Path"].update(f"{config['stray light directory']}{values['Stray Light Dropdown']}")
+            StrayLightDropdownEvent(values)
         elif event == "Execute":
-            params = Parameters(
-                values["Browse"],
-                values["Geometry"],
-                int(values["Size"]),
-                values["Material"],
-                values["Serial Number"],
-                values["Reflectance"],
-                config["requirements"][values["Requirements"]] if values["Requirements"] in config["requirements"] else {},
-                values["Instrument"],
-                values["Date"],
-                values["Stray Light Path"],
-            )
-            error = params.isValid()
-            if not type(error) is str:
-                window["Log"].update("Executing...")
-                Timer(1.0, AsyncExecute).start()
-            else:
-                window["Log"].update(error)
-                print("Execution Conditions not met:     ", error, "\n")
+            ExecuteEvent(values)
         elif event == sg.WIN_CLOSED:
             break
     window.close()

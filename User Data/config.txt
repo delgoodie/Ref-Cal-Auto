@@ -8,38 +8,16 @@ USB_PATH = E:\
 # 6-95%      .05
 # 96-99.9%   .02
 
-# what material is the 99 ? how does mat affect this
-# how do I interpert the Target wavelength reqs in the 99 refcal sheet
-# fix puck diameter 0X0
-# targets 99% Tim Smith
-
 #FAil case: remove last four of sn and append FAIL-(n) to root folder
-
-#spectralon instead of spectraflect
-
 
 REQUIREMENTS
     No Additional Requirements
 
-    In-Cube 900-1600
+    Pentamaster 18 250-2500
+        1000 = 0.18-0.21
+        1500 = 0.18-0.21
+
+    Pentamaster 18 (f) 250-2500
         1000 = 0.18-0.21
         1500 = 0.18-0.21
         flatness = 0.04
-
-    Pentamaster (f) 250-2500
-        1000 = 0.18-0.21
-        1500 = 0.18-0.21
-        flatness = 0.04
-
-    Pentamaster 250-2500
-        1000 = 0.18-0.21
-        1500 = 0.18-0.21
-
-    Pentamaster (f) 800-1600
-        1000 = 0.18-0.21
-        1500 = 0.18-0.21
-        flatness = 0.04
-
-    Pentamaster 800-1600
-        1000 = 0.18-0.21
-        1500 = 0.18-0.21
