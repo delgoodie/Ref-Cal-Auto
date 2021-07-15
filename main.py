@@ -1,5 +1,7 @@
 # !/usr/bin/python
 
+# 99AA03-0221-9312
+
 from os.path import exists as os_path_exists
 from os import remove as os_remove
 from os import listdir as os_listdir
@@ -15,43 +17,10 @@ from docx import Document as docx_document
 from docx.shared import Inches
 import matplotlib.pyplot as plt
 from docx2pdf import convert as docx2pdf_convert
-from math import ceil, floor, log10
+from math import floor, log10
 from threading import Timer
 from time import perf_counter
 from datetime import date
-
-"""
-OVERVIEW:
-
-This program is designed to automate the Reflectance Calibration Task in the RefLab.
-Once a scan is taken, the scanning device creates a folder with data from the scan, found in /Equation1.Sample.Cycle1.Equation1.csv, and other intermediate csv files
-Then five steps are required of the user, which are automated in this script:
-
-* Correcting the raw data (achieved by copying data from /Equation1.Sample.Cycle1.Equation1.csv to \GrayReflectCalA.xls which functional corrects data)
-* Testing corrected data against both internal and customer requirements and passing/failing accordingly
-* Creating a txt file which holds corrected data (must be named (last four of serial number)-(model name))
-* Creating a certificate word doc and transfering metadata (model, serial number, date, ...), corrected data (from \GrayReflectCalA.xls), and a graph of the corrected data (from \GrayReflectCalA.xls)
-* Creating a PDF cert of the word doc
-* Copying the PDF and txt file to a USB stick
-
-Also note that an important part of the automation process is locating the Stray Light Scan performed on the same day as the reflectance scan, which is used in correcting the raw data
-
-CODE NOTES:
-
-* When compiling this script, copy the /User Data/ folder into the same directory as main.exe (in dist/main/)
-
-* methods are imported and renamed with underscores so as to keep naming clear and concise while still importing the mininmum number of methods / dependencies
-
-* Execute function is seperated into many parts so that each part can be wrapped with @debug
-
-* The execution occurs async in another thread so as to live-update the console and gui with progress
-
-* the debug function is a wrapper which logs the time taken by a function, handels errors, and logs status
-
-* window, params, and config were made global since debug and other functions require them (yeah, it had to be)
-
-* this script depends on a relative folder /User Data which must contain rr.txt, clients.txt, config.txt, and template.docx
-"""
 
 # Globals
 
@@ -60,115 +29,37 @@ params = 0
 config = {}
 internal_reqs = [
     # region Table II
-    {
-        'material': 'Spectralon',
-        'reflectance': 2,
-        'geometry': 'Puck',
-        'tolerance': {600: (0, 2)},
-        'flatness': 4
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': 2,
-        'geometry': 'Target',
-        'tolerance': {600: 2},
-        'flatness': 4
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': 5,
-        'geometry': 'Puck',
-        'tolerance': {600: 1},
-        'flatness': 4
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': 5,
-        'geometry': 'Target',
-        'tolerance': {600: 2},
-        'flatness': 4
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': (6, 19),
-        'geometry': 'Puck',
-        'tolerance': {600: 1},
-        'flatness': 5
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': (6, 19),
-        'geometry': 'Target',
-        'tolerance': {600: 3},
-        'flatness': 5
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': (20, 95),
-        'geometry': 'Puck',
-        'tolerance': {600: 2},
-        'flatness': 5
-    },
-    {
-        'material': 'Spectralon',
-        'reflectance': (20, 95),
-        'geometry': 'Target',
-        'tolerance': {600: 5},
-        'flatness': 5
-    },
-    #endregion
+    {"material": "Spectralon", "reflectance": 2, "geometry": "Puck", "tolerance": {600: (0, 2)}, "flatness": 4},
+    {"material": "Spectralon", "reflectance": 2, "geometry": "Target", "tolerance": {600: 2}, "flatness": 4},
+    {"material": "Spectralon", "reflectance": 5, "geometry": "Puck", "tolerance": {600: 1}, "flatness": 4},
+    {"material": "Spectralon", "reflectance": 5, "geometry": "Target", "tolerance": {600: 2}, "flatness": 4},
+    {"material": "Spectralon", "reflectance": (6, 19), "geometry": "Puck", "tolerance": {600: 1}, "flatness": 5},
+    {"material": "Spectralon", "reflectance": (6, 19), "geometry": "Target", "tolerance": {600: 3}, "flatness": 5},
+    {"material": "Spectralon", "reflectance": (20, 95), "geometry": "Puck", "tolerance": {600: 2}, "flatness": 5},
+    {"material": "Spectralon", "reflectance": (20, 95), "geometry": "Target", "tolerance": {600: 5}, "flatness": 5},
+    # endregion
     # region Table III
     {
-        'material': 'Spectralon',
-        'reflectance': 99,
-        'geometry': 'Target',
-        'range': {
-            250: (.9, .995),
-            300: (.925, .995),
-            350: (.975, .995),
-            (400, 700, 50): (.985, .995),
-            (750, 1600, 50): (.975, .995),
-            (1650, 2350, 50): (.915, .995)
-        }
+        "material": "Spectralon",
+        "reflectance": 99,
+        "geometry": "Target",
+        "range": {
+            250: (0.9, 0.995),
+            300: (0.925, 0.995),
+            350: (0.975, 0.995),
+            (400, 700, 50): (0.985, 0.995),
+            (750, 1600, 50): (0.975, 0.995),
+            (1650, 2350, 50): (0.915, 0.995),
+        },
     },
     # endregion
     # region Permaflect Table
-    {
-        'material': 'Permaflect',
-        'reflectance': 5,
-        'geometry': 'Target',
-        'tolerance': { 905: 1.25 }
-    },
-    {
-        'material': 'Permaflect',
-        'reflectance': 10,
-        'geometry': 'Target',
-        'tolerance': { 905: 1.25 }
-    },
-    {
-        'material': 'Permaflect',
-        'reflectance': 18,
-        'geometry': 'Target',
-        'tolerance': { 905: 1.25 }
-    },
-    {
-        'material': 'Permaflect',
-        'reflectance': 50,
-        'geometry': 'Target',
-        'tolerance': { 905: 1.75 }
-    },
-    {
-        'material': 'Permaflect',
-        'reflectance': 80,
-        'geometry': 'Target',
-        'tolerance': { 905: 1.25 }
-    },
-    {
-        'material': 'Permaflect',
-        'reflectance': 94,
-        'geometry': 'Target',
-        'tolerance': { 905: (0, 3) }
-    }
+    {"material": "Permaflect", "reflectance": 5, "geometry": "Target", "tolerance": {905: 1.25}},
+    {"material": "Permaflect", "reflectance": 10, "geometry": "Target", "tolerance": {905: 1.25}},
+    {"material": "Permaflect", "reflectance": 18, "geometry": "Target", "tolerance": {905: 1.25}},
+    {"material": "Permaflect", "reflectance": 50, "geometry": "Target", "tolerance": {905: 1.75}},
+    {"material": "Permaflect", "reflectance": 80, "geometry": "Target", "tolerance": {905: 1.25}},
+    {"material": "Permaflect", "reflectance": 94, "geometry": "Target", "tolerance": {905: (0, 3)}}
     # endregion
 ]
 
@@ -231,37 +122,26 @@ class Parameters:
         self.model = f"{'SRT' if self.geometry == 'Target' else 'SRS'}-{self.reflectance}-{self.size}"
 
     def isValid(self):
-        if self.root_path and type(self.root_path) is str and os_path_exists(self.root_path):
-            if self.material and type(self.material) is str and self.material in ["Spectralon", "Permaflect"]:
-                if self.geometry and type(self.geometry) is str and self.geometry in ["Target", "Puck"]:
-                    if self.size and type(self.size) is str:
-                        if self.serial_number and type(self.serial_number) is str and len(self.serial_number) > 4:
-                            if self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100:
-                                if True or self.requirements and type(self.requirements) is dict:
-                                    if self.instrument and self.instrument in ["A", "B", "C"]:
-                                        if self.date and type(self.date) is Date and self.date.valid():
-                                            if self.stray_light_path and type(self.stray_light_path) is str and os_path_exists(self.stray_light_path):
-                                                return True
-                                            else:
-                                                return "Invalid Stray Light Path"
-                                        else:
-                                            return "Invalid Date"
-                                    else:
-                                        return "Invalid Instrument"
-                                else:
-                                    return "Invalid Requirements (or client)"
-                            else:
-                                return "Invalid Reflectance"
-                        else:
-                            return "Invalid Serial Number"
-                    else:
-                        return "Invalid [Puck or Target] Size"
-                else:
-                    return "Invalid Type"
-            else:
-                return "Invalid Material"
-        else:
+        if not (self.root_path and type(self.root_path) is str and os_path_exists(self.root_path)):
             return "Invalid Root Path"
+        if not (self.material and type(self.material) is str and self.material in ["Spectralon", "Permaflect"]):
+            return "Invalid Material"
+        if not (self.geometry and type(self.geometry) is str and self.geometry in ["Target", "Puck"]):
+            return "Invalid Type"
+        if not (self.size and type(self.size) is str):
+            return "Invalid [Puck or Target] Size"
+        if not (self.serial_number and type(self.serial_number) is str and len(self.serial_number) > 4):
+            return "Invalid Serial Number"
+        if not (self.reflectance and type(self.reflectance) is int and self.reflectance > 0 and self.reflectance < 100):
+            return "Invalid Reflectance"
+        if not (self.instrument and self.instrument in ["A", "B", "C"]):
+            return "Invalid Instrument"
+        if not (self.date and type(self.date) is Date and self.date.valid()):
+            return "Invalid Date"
+        if not (self.stray_light_path and type(self.stray_light_path) is str and os_path_exists(self.stray_light_path)):
+            return "Invalid Stray Light Path"
+        return True
+
 
 class CSV:
     def __init__(self, _path: str):
@@ -353,6 +233,7 @@ class CSV:
             file = open(self.path, "w")
             file.write(string)
             file.close()
+
 
 class DOCX:
     def __init__(self, _path):
@@ -507,11 +388,6 @@ def debug(func):
     return wrap
 
 
-# endregion
-
-# region EXECUTION STEPS
-
-
 @debug
 def GetStrayLightPaths(date: Date) -> list[str]:
     global config
@@ -528,6 +404,11 @@ def GetStrayLightPaths(date: Date) -> list[str]:
         if dirDate != -1 and dirDate == date:
             result.append(dir)
     return result
+
+
+# endregion
+
+# region EXECUTION STEPS
 
 
 @debug
@@ -555,7 +436,7 @@ def CorrectData(raw: DOCX, strayLight: DOCX, Rr: list[float]) -> list[float]:
     while len(strayLight.Read(("A", i))) > 0:
         s_l = float(strayLight.Read(("B", i)))
         if s_l < 0 or s_l > 1:
-            print(f'[WARNING] Check Stray Light Scan for data outside of range 0 - 1 (around {i + 245}nm)')
+            print(f"[WARNING] Check Stray Light Scan for data outside of range 0 - 1 (around {i + 245}nm)")
             s_l = max(0, min(1, s_l))
         Mh[int(float(strayLight.Read(("A", i))))] = s_l
         i += 1
@@ -582,44 +463,44 @@ def TestRequirements(corrected_data: dict) -> str:
     # Test Internal Requirements
 
     for i_r in internal_reqs:
-        if params.material == i_r['material'] and params.reflectance == i_r['reflectance'] and params.geometry == i_r['geometry']:
-            if 'range' in i_r:
-                for r in i_r['range']:
+        if params.material == i_r["material"] and params.reflectance == i_r["reflectance"] and params.geometry == i_r["geometry"]:
+            if "range" in i_r:
+                for r in i_r["range"]:
                     if type(r) is int:
-                        if corrected_data[r] < i_r['range'][r][0] or corrected_data[r] > i_r['range'][r][1]:
+                        if corrected_data[r] < i_r["range"][r][0] or corrected_data[r] > i_r["range"][r][1]:
                             return f"Corrected Data did not pass requirements (internal) ({corrected_data[r]} @ {r}nm did not meet {i_r['range'][r][0]} < R < {i_r['range'][r][1]} @ {r}nm)"
                     else:
                         for w in range(r[0], r[1] + r[2], r[2]):
-                            if corrected_data[w] < i_r['range'][r][0] or corrected_data[w] > i_r['range'][r][1]:
+                            if corrected_data[w] < i_r["range"][r][0] or corrected_data[w] > i_r["range"][r][1]:
                                 return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet {i_r['range'][r][0]} < R < {i_r['range'][r][1]} on [{r[0]}nm - {r[1]}nm))"
-            if 'tolerance' in i_r:
+            if "tolerance" in i_r:
                 target = 0
                 if params.material == "Spectralon":
                     target = params.reflectance
                 else:
                     target = sum(corrected_data[v] for v in corrected_data) / len(corrected_data) * 100
-                for t in i_r['tolerance']:
-                    r = i_r['tolerance'][t]
+                for t in i_r["tolerance"]:
+                    r = i_r["tolerance"][t]
                     if type(t) is int:
                         if type(r) is int or type(r) is float:
-                            if corrected_data[t] < (target - r) * .01 or corrected_data[t] > (target + r) * .01:
+                            if corrected_data[t] < (target - r) * 0.01 or corrected_data[t] > (target + r) * 0.01:
                                 return f"Corrected Data did not pass requirements (internal) ({corrected_data[t]} @ {t}nm did not meet R within +/-{r}% of {target} @ {t}nm)"
                         else:
-                            if corrected_data[t] < (target - r[0]) *.01 or corrected_data[t] > (target + r[1]) * .01:
+                            if corrected_data[t] < (target - r[0]) * 0.01 or corrected_data[t] > (target + r[1]) * 0.01:
                                 return f"Corrected Data did not pass requirements (internal) ({corrected_data[t]} @ {t}nm did not meet R within -{r[0]}% to +{r[1]}% of {target} @ {t}nm)"
-                            
+
                     else:
                         for w in range(t[0], t[1] + t[2], t[2]):
                             if type(r) is int or type(r) is float:
-                                if corrected_data[w] < (target - r) * .01 or corrected_data[t] > (target + r) * .01:
+                                if corrected_data[w] < (target - r) * 0.01 or corrected_data[t] > (target + r) * 0.01:
                                     return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet R within +/-{r}% of {target} on [{r[0]}nm - {r[1]}nm))"
                             else:
-                                if corrected_data[t] < (target - r[0]) * .01 or corrected_data[t] > (target + r[1]) * .01:
+                                if corrected_data[t] < (target - r[0]) * 0.01 or corrected_data[t] > (target + r[1]) * 0.01:
                                     return f"Corrected Data did not pass requirements (internal) ({corrected_data[w]} @ {w}nm did not meet R within -{r[0]}% to +{r[1]}% of {target} on [{r[0]}nm - {r[1]}nm))"
-            if 'flatness' in i_r:
+            if "flatness" in i_r:
                 flat_arr = [corrected_data[v] for v in range(350, 760)]
                 flatness = max(flat_arr) - min(flat_arr)
-                if flatness > i_r['flatness']:
+                if flatness > i_r["flatness"]:
                     return f"Corrected Data did not pass requirements (internal) (flatness: {flatness} was not < .02)"
 
     # Test Additional Requirements
@@ -643,7 +524,7 @@ def TestRequirements(corrected_data: dict) -> str:
 def RenameRootFolder(success: bool) -> None:
     """
     Renames root folder, either sn if success or sn-FAIL
-    
+
      removing last four sn digits and appending FAIL
 
     If a FAIL folder already exists, append a number starting at 2 and increasing by one:
@@ -652,10 +533,10 @@ def RenameRootFolder(success: bool) -> None:
     """
     global params
 
-    path = params.root_path[0 : params.root_path.rindex('/') + 1] + params.serial_number
+    path = params.root_path[0 : params.root_path.rindex("/") + 1] + params.serial_number
     if not success:
         if not os_path_exists(f"{path[0:-5]}FAIL"):
-            path =  f"{path[0:-5]}FAIL"
+            path = f"{path[0:-5]}FAIL"
         else:
             i = 2
             while os_path_exists(f"{path[0:-5]}FAIL-{i}"):
@@ -663,13 +544,13 @@ def RenameRootFolder(success: bool) -> None:
             path = f"{params.root_path[0:-5]}FAIL-{i}"
 
     os_rename(params.root_path, path)
-    params.root_path = path + '/'
+    params.root_path = path + "/"
 
 
 @debug
 def SaveStrayLight(src_path):
     global params
-    shutil_copyfile(src_path, f'{params.root_path}/StrayLightScan.csv')
+    shutil_copyfile(src_path, f"{params.root_path}/StrayLightScan.csv")
 
 
 @debug
@@ -695,7 +576,7 @@ def WriteWordMeta(doc: DOCX) -> None:
     * instrument (A, B, C)
     """
     doc.ReplaceText("sn", params.serial_number)
-    doc.ReplaceText("DATE", date.today().strftime("%d/%m/%Y"))
+    doc.ReplaceText("DATE", date.today().strftime("%m/%d/%Y"))
     doc.ReplaceText("model", params.model)
     doc.ReplaceText("isA", "X" if params.instrument == "A" else "")
     doc.ReplaceText("isB", "X" if params.instrument == "B" else "")
@@ -884,7 +765,7 @@ def Execute() -> bool:
 
 def AsyncExecute() -> None:
     """
-    This function exists so the Execute Function can occur on a seperate thread, while the GUI continues to receive updates
+    This function exists so the Execute Function can occur on a separate thread, while the GUI continues to receive updates
     """
     global window
     global params
@@ -1075,8 +956,9 @@ def main() -> None:
     """
     Main function:
 
-    * Initializes GUI
     * Handles Events
+
+    * Executes tool
     """
     global window
     global params
@@ -1100,19 +982,6 @@ def main() -> None:
     window.close()
 
 
-# !ENTRY POINT
+# ENTRY POINT
 setup()
 main()
-
-# !TESTING
-# Execute(
-#     {
-#         "path": "C:\\Users\\wdelgiudice\\Downloads\\18%PF-1020-4436 - Copy\\",
-#         "reflectance": "99%",
-#         "serial number": "PF-0921-4398",
-#         "date": DateFromString("1/6/2021"),
-#         "instrument": "B",
-#         "stray light path": "\\\\lssvr-fs01\\Reflectance Lab\\Reflectance Calibrations\\stray light Summary.xls_files\\Stray Light 4-7-2021 C\\",
-#         "client": {1000: (0.1, 0.21), 1500: (0.1, 0.21)},
-#     }
-# )
