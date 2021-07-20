@@ -2,6 +2,7 @@
 
 # 99AA03-0221-9312
 
+
 from os.path import exists as os_path_exists
 from os import remove as os_remove
 from os import listdir as os_listdir
@@ -15,6 +16,7 @@ from shutil import copyfile as shutil_copyfile
 import PySimpleGUI as sg
 from docx import Document as docx_document
 from docx.shared import Inches
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from docx2pdf import convert as docx2pdf_convert
 from math import floor, log10
@@ -643,6 +645,7 @@ def WriteWordGraph(doc: DOCX, corrected_data: dict) -> None:
     * Writes image to docx cert
     * Deletes temp.png
     """
+    mpl.use('Agg')
     plt_x = [w for w in range(250, 2500, 5)]
     plt_y = []
     for w in plt_x:
@@ -693,8 +696,8 @@ def CopyToUsb() -> None:
     Copies raw data txt file and final cert pdf file to USB path specified in User Data\\config.txt
     """
     if os_path_exists(config["usb path"]):
-        docxName = f"DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx"
-        shutil_copyfile(f"{params.root_path}{docxName}", f"{config['usb path']}{docxName}")
+        txtName = f"{params.serial_number[-4:len(params.serial_number)]}-{params.model}.txt"
+        shutil_copyfile(f"{params.root_path}{txtName}", f"{config['usb path']}{txtName}")
         shutil_copyfile(f"{params.root_path}{params.serial_number}.pdf", f"{config['usb path']}{params.serial_number}.pdf")
 
 
