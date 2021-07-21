@@ -660,7 +660,7 @@ def WriteWordGraph(doc: DOCX, corrected_data: dict) -> None:
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
     # plt.axis([250, 2500, 0, ceil(max(plt_y) * 10) * 0.1])
-    plt.savefig("temp.png")
+    plt.savefig("temp.png", format='png')
     doc.ReplacePicture("graph", "temp.png", (7, 5.5))
     os_remove("temp.png")
 
@@ -911,7 +911,7 @@ def setup() -> None:
             sg.Text("Target Size", size=(11, 0), key="Size Name", pad=(0, 0)),
             sg.DropDown(["020", "050", "100", "120", "180", "240"], "", key="Size", size=(6, 1), pad=(0, 0), readonly=False),
             sg.Text("Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "18%", "20%", "40%", "60%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
+            sg.DropDown(["2%", "5%", "10%", "18%", "20%", "40%", "50%", "60%", "75%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
         ],
         # 5
         [
