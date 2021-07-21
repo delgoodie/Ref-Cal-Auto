@@ -173,3 +173,17 @@ Notes:
 
 
 Contact delwillgiudice@gmail.com for questions regarding this tool
+
+
+
+
+
+
+Nvlap checkbox
+
+99% should say white
+
+
+
+
+
