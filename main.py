@@ -15,7 +15,7 @@ from re import match as re_match
 from shutil import copyfile as shutil_copyfile
 import PySimpleGUI as sg
 from docx import Document as docx_document
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from docx2pdf import convert as docx2pdf_convert
@@ -93,6 +93,7 @@ class Parameters:
         material: str = None,
         serial_number: str = None,
         reflectance: int = None,
+        nvlap: bool = False,
         requirements: dict = None,
         instrument: str = None,
         date: Date = None,
@@ -115,6 +116,7 @@ class Parameters:
         self.material = material
         self.serial_number = serial_number
         self.reflectance = reflectance
+        self.nvlap = nvlap
         self.requirements = requirements
         self.instrument = instrument
         self.date = date
@@ -122,6 +124,17 @@ class Parameters:
 
         # derived property
         self.model = f"{'SRT' if self.geometry == 'Target' else 'SRS'}-{self.reflectance}-{self.size}"
+        self.docx_name = ""
+        if self.reflectance == 99:
+            if self.nvlap:
+                self.docx_name = "DM-01400-001Rev13 99 cal cert.docx"
+            else:
+                self.docx_name = "User Data\\DM-01400-009Rev04 99 cal cert non NVLAP.docx"
+        else:
+            if self.nvlap:
+                self.docx_name = "User Data\\DM-01400-001Rev13 Gray cal cert.docx"
+            else:
+                self.docx_name = "User Data\\DM-01400-009Rev04 Gray cal cert non NVLAP.docx"
 
     def isValid(self):
         if not (self.root_path and type(self.root_path) is str and os_path_exists(self.root_path)):
@@ -250,7 +263,7 @@ class DOCX:
         for t in self.doc.tables:
             for c in t._cells:
                 if re_search(f"<{variable}>", c.text):
-                    occurences.append(c)
+                    occurences.append(c.paragraphs[0])
         for s in self.doc.sections:
             for p in s.header.paragraphs:
                 if re_search(f"<{variable}>", p.text):
@@ -258,12 +271,17 @@ class DOCX:
             for t in s.header.tables:
                 for c in t._cells:
                     if re_search(f"<{variable}>", c.text):
-                        occurences.append(c)
+                        occurences.append(c.paragraphs[0])
         return occurences
 
     def ReplaceText(self, variable: str, value: str):
         for e in self._docxOccurences(variable):
-            e.text = e.text.replace(f"<{variable}>", value)
+            text = e.text.replace(f"<{variable}>", value)
+            e.text = ""
+            run = e.add_run()
+            run.text = text
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(8)
 
     def ReplacePicture(self, variable: str, path: str, size):
         for e in self._docxOccurences(variable):
@@ -414,6 +432,12 @@ def GetStrayLightPaths(date: Date) -> list[str]:
 
 
 @debug
+def GetDocxTemplate() -> DOCX:
+    global params
+    return DOCX(f"User Data\\{params.docx_name}")
+
+
+@debug
 def Get_rr() -> list[float]:
     """
     Reads Rr data from \\User Data\\rr.txt
@@ -546,13 +570,13 @@ def RenameRootFolder(success: bool) -> None:
             path = f"{params.root_path[0:-5]}FAIL-{i}"
 
     os_rename(params.root_path, path)
-    params.root_path = path + "/"
+    params.root_path = path + "\\"
 
 
 @debug
 def SaveStrayLight(src_path):
     global params
-    shutil_copyfile(src_path, f"{params.root_path}/StrayLightScan.csv")
+    shutil_copyfile(src_path, f"{params.root_path}\\StrayLightScan.csv")
 
 
 @debug
@@ -645,7 +669,7 @@ def WriteWordGraph(doc: DOCX, corrected_data: dict) -> None:
     * Writes image to docx cert
     * Deletes temp.png
     """
-    mpl.use('Agg')
+    mpl.use("Agg")
     plt_x = [w for w in range(250, 2500, 5)]
     plt_y = []
     for w in plt_x:
@@ -660,7 +684,7 @@ def WriteWordGraph(doc: DOCX, corrected_data: dict) -> None:
     plt.xlabel("Wavelength (nm)")
     plt.xticks([i for i in range(250, 2501, 250)])
     # plt.axis([250, 2500, 0, ceil(max(plt_y) * 10) * 0.1])
-    plt.savefig("temp.png", format='png')
+    plt.savefig("temp.png", format="png")
     doc.ReplacePicture("graph", "temp.png", (7, 5.5))
     os_remove("temp.png")
 
@@ -672,7 +696,7 @@ def SaveWord(doc: DOCX) -> None:
 
     This function exists simply to wrap DOCX.Save() method so the debug wrapper can be used
     """
-    doc.Save(f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx")
+    doc.Save(params.root_path + doc.path[doc.path.rindex("\\") + 1 : len(doc.path)])
 
 
 @debug
@@ -684,7 +708,7 @@ def SavePdf() -> None:
     """
     print("")
     docx2pdf_convert(
-        f"{params.root_path}DM-01400-010Rev04 {'99' if params.reflectance == '99%' else 'Gray'} cal cert non NVLAP.docx",
+        f"{params.root_path}{params.docx_name}",
         f"{params.root_path}{params.serial_number}.pdf",
     )
 
@@ -728,7 +752,8 @@ def Execute() -> bool:
 
     raw = CSV(f"{params.root_path}Equation1.Sample.Cycle1.Equation1.csv")
     strayLight = CSV(f"{params.stray_light_path}Equation1.Sample.Cycle1.Equation1.csv")
-    doc = DOCX("User Data\\template.docx")
+
+    doc = GetDocxTemplate()
 
     rr = Get_rr()
     if not rr:
@@ -831,6 +856,7 @@ def ExecuteEvent(values):
         values["Material"],
         values["Serial Number"],
         values["Reflectance"],
+        values["Nvlap"],
         config["requirements"][values["Requirements"]] if values["Requirements"] in config["requirements"] else {},
         values["Instrument"],
         values["Date"],
@@ -857,8 +883,14 @@ def setup() -> None:
         raise Exception("User Data\\rr.txt Does Not Exist")
     if not os_path_exists("User Data\\config.txt"):
         raise Exception("User Data\\config.txt Does Not Exist")
-    if not os_path_exists("User Data\\template.docx"):
-        raise Exception("User Data\\template.docx Does Not Exist")
+    if not os_path_exists("User Data\\DM-01400-001Rev13 99 cal cert.docx"):
+        raise Exception("User Data\\DM-01400-001Rev13 99 cal cert.docx Does Not Exist")
+    if not os_path_exists("User Data\\DM-01400-001Rev13 Gray cal cert.docx"):
+        raise Exception("User Data\\DM-01400-001Rev13 Gray cal cert.docx Does Not Exist")
+    if not os_path_exists("User Data\\DM-01400-009Rev04 99 cal cert non NVLAP.docx"):
+        raise Exception("User Data\\DM-01400-009Rev04 99 cal cert non NVLAP.docx Does Not Exist")
+    if not os_path_exists("User Data\\DM-01400-009Rev04 Gray cal cert non NVLAP.docx"):
+        raise Exception("User Data\\DM-01400-009Rev04 Gray cal cert non NVLAP.docx Does Not Exist")
 
     # Reads config data for constant paths
 
@@ -911,14 +943,17 @@ def setup() -> None:
             sg.Text("Target Size", size=(11, 0), key="Size Name", pad=(0, 0)),
             sg.DropDown(["020", "050", "100", "120", "180", "240"], "", key="Size", size=(6, 1), pad=(0, 0), readonly=False),
             sg.Text("Reflectance"),
-            sg.DropDown(["2%", "5%", "10%", "18%", "20%", "40%", "50%", "60%", "75%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False),
+            sg.DropDown(
+                ["2%", "5%", "10%", "18%", "20%", "40%", "50%", "60%", "75%", "80%", "99%"], "99%", size=(7, 1), key="Reflectance", readonly=False
+            ),
         ],
         # 5
         [
             sg.Text("Serial Number", size=(10, 1)),
             sg.Input("", size=(20, 1), key="Serial Number"),
+            sg.Checkbox("NVLAP", key="Nvlap", default=False),
             sg.Text("Requirements", pad=((0, 0), 0)),
-            sg.DropDown([c for c in config["requirements"]], "No Additional Requirements", size=(42, 1), key="Requirements", readonly=True),
+            sg.DropDown([c for c in config["requirements"]], "No Additional Requirements", size=(30, 1), key="Requirements", readonly=True),
         ],
         # 6
         [sg.Text("")],

@@ -16,7 +16,7 @@ If the requirements are not met, the script halts and must be manually exited, a
 
 Otherwise, if the requirements are met, the script will next make a text file names {model name}.txt containing the corrected data at every nanometer for customer reference.
 
-Next the Certificate is made, first as a word doc. This certificate is generated using a pre-existing word doc called template.docx, which is located in the User Data folder, which in the root directory of the executable. Opening up the template.docx file reveals that there are several variables or flags (encased in angled brackets < >) which will be replaced by the script with data from the scan.
+Next the Certificate is made, first as a word doc. This certificate is generated using a pre-existing word doc called, which is located in the User Data folder, which in the root directory of the executable. Opening up one of the template docx file reveals that there are several variables or flags (encased in angled brackets < >) which will be replaced by the script with data from the scan.
 This includes:
 * serial number (sn)
 * model name (model)
@@ -86,7 +86,10 @@ This tool is written in Python, and relies on several dependencies, imported as 
 The script also depends on a folder located in the same directory called 'User Data' which contains three files:
 * config.txt
 * rr.txt
-* template.docx
+* DM-01400-001Rev13 99 cal cert.docx
+* DM-01400-001Rev13 Gray cal cert.docx
+* DM-01400-009Rev04 99 cal cert non NVLAP.docx
+* DM-01400-009Rev04 Gray cal cert non NVLAP.docx
 
 How it works:
 
@@ -141,7 +144,7 @@ Generates a text file with the name of the model name containing the corrected r
 WriteWordMeta
 Populates the word doc with metadata such as serial number, date, and instrument
 The way the word doc is generated is through populating a template.
-The template is located in /User Data/template.docx. Inside the template you can see variables inside angled brackets <> which represent data that needs to be populated. The function then uses regexs to find each variable and replaces it with the according data
+The template is located in /User Data/. Inside the template you can see variables inside angled brackets <> which represent data that needs to be populated. The function then uses regexs to find each variable and replaces it with the according data
 
 WriteWordData
 Populates the word doc reflectance table at every 50nms and uses significant figures drawn from the uncertainty table in the word doc
@@ -161,7 +164,7 @@ Attempts to copy the pdf cert and data txt file onto the usb (the usb path is sp
 
 
 Notes:
-* this script depends on a relative folder /User Data which must contain rr.txt, config.txt, and template.docx
+* this script depends on a relative folder /User Data which must contain rr.txt, config.txt, and several template docs
 
 * When compiling this script, copy the /User Data/ folder into the same directory as main.exe
 
