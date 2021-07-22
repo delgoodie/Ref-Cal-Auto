@@ -29,6 +29,7 @@ from datetime import date
 window = 0
 params = 0
 config = {}
+globStatus = True
 internal_reqs = [
     # region Table II
     {"material": "Spectralon", "reflectance": 2, "geometry": "Puck", "tolerance": {600: (0, 2)}, "flatness": 4},
@@ -129,12 +130,12 @@ class Parameters:
             if self.nvlap:
                 self.docx_name = "DM-01400-001Rev13 99 cal cert.docx"
             else:
-                self.docx_name = "User Data\\DM-01400-009Rev04 99 cal cert non NVLAP.docx"
+                self.docx_name = "DM-01400-009Rev04 99 cal cert non NVLAP.docx"
         else:
             if self.nvlap:
-                self.docx_name = "User Data\\DM-01400-001Rev13 Gray cal cert.docx"
+                self.docx_name = "DM-01400-001Rev13 Gray cal cert.docx"
             else:
-                self.docx_name = "User Data\\DM-01400-009Rev04 Gray cal cert non NVLAP.docx"
+                self.docx_name = "DM-01400-009Rev04 Gray cal cert non NVLAP.docx"
 
     def isValid(self):
         if not (self.root_path and type(self.root_path) is str and os_path_exists(self.root_path)):
@@ -379,6 +380,7 @@ def debug(func):
     def MyFunc
     """
     global window
+    global globStatus
 
     def wrap(*args, **kwargs):
         start = perf_counter()
@@ -399,6 +401,7 @@ def debug(func):
             print("LINE: ", exc_tb.tb_lineno)
             print("ERROR: ", e)
             window["Log"].update("ERROR: GO TO CONSOLE")
+            globStatus = False
             return False
         end = perf_counter()
         print(f"√  {round(1000 * (end - start))} ms")
@@ -609,7 +612,7 @@ def WriteWordMeta(doc: DOCX) -> None:
     doc.ReplaceText("isC", "X" if params.instrument == "C" else "")
 
 
-@debug
+# @debug
 def WriteWordData(doc: DOCX, corrected_data: dict) -> None:
     """
     Writes corrected reflectance data to word docx cert in in table
@@ -798,9 +801,10 @@ def AsyncExecute() -> None:
     global window
     global params
     global config
+    global globStatus
 
     result = Execute()
-    if result:
+    if result and globStatus:
         window["Log"].update("Finished: SUCCESS")
         os_system(f'start "" "{params.root_path}"')
         if os_path_exists(config["usb path"]):
